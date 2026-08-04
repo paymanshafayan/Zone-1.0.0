@@ -1,6 +1,8 @@
 /// Zone Logger — Simple structured logger for the Flutter app
 library core_utils_logger;
 
+import 'package:flutter/foundation.dart';
+
 class ZoneLogger {
   final String context;
 
