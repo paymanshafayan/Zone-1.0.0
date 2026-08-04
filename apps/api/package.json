@@ -1,0 +1,35 @@
+{
+  "name": "@zone/api",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src/",
+    "test": "jest",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@fastify/multipart": "^9.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@zone/core": "workspace:*",
+    "@zone/db": "workspace:*",
+    "@zone/redis": "workspace:*",
+    "@zone/sdk": "workspace:^",
+    "@zone/tags": "workspace:*",
+    "@zone/voice": "workspace:^",
+    "@zone/assistant": "workspace:*",
+    "fastify": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^22.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

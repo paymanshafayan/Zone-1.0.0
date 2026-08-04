@@ -1,0 +1,99 @@
+name: zone_app
+description: Zone — Neighbourhood friend app (not a marketplace)
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.12.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # ─── State Management ───
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # ─── Navigation ───
+  go_router: ^14.8.1
+
+  # ─── Network ───
+  dio: ^5.8.0
+  web_socket_channel: ^3.0.2
+
+  # ─── Voice / Audio ───
+  record: ^5.2.1
+  audioplayers: ^6.1.0
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.2.3
+
+  # ─── Maps ───
+  # Neshan map SDK — will be added when available
+  # For now, use a placeholder map implementation
+  # neshan_map_sdk: ^1.1.0
+
+  # ─── Storage ───
+  shared_preferences: ^2.5.3
+  flutter_secure_storage: ^9.2.4
+
+  # ─── UI ───
+  flutter_screenutil: ^5.9.0
+  cached_network_image: ^3.3.1
+  shimmer: ^3.0.0
+  lottie: ^3.1.0
+  percent_indicator: ^4.2.3
+  photo_view: ^0.14.0
+  image_picker: ^1.0.7
+  video_player: ^2.8.2
+
+  # ─── Permissions ───
+  permission_handler: ^11.4.0
+
+  # ─── Utilities ───
+  freezed_annotation: ^3.0.0
+  json_annotation: ^4.9.0
+  intl: ^0.20.2
+  url_launcher: ^6.3.1
+  path_provider: ^2.1.5
+  uuid: ^4.5.1
+  logger: ^2.5.0
+  connectivity_plus: ^6.1.4
+  vibration: ^3.1.0
+
+  # ─── On-device Processing ───
+  # ONNX Runtime for edge processing (tag extraction, intent detection)
+  # Note: onnxruntime_flutter may need manual setup for production
+  # For MVP, we use keyword matching (same as backend dev mode)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.14
+  freezed: ^3.0.0
+  json_serializable: ^6.9.4
+  riverpod_generator: ^2.6.3
+  mockito: ^5.4.5
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/animations/
+    - assets/fonts/
+
+  fonts:
+    - family: Vazirmatn
+      fonts:
+        - asset: assets/fonts/Vazirmatn-Regular.ttf
+        - asset: assets/fonts/Vazirmatn-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Vazirmatn-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Vazirmatn-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Vazirmatn-SemiBold.ttf
+          weight: 600

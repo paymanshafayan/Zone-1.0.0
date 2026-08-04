@@ -1,0 +1,9 @@
+{
+  "name": "@zone/assistant",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": { "build": "tsc", "type-check": "tsc --noEmit" },
+  "dependencies": { "@zone/core": "workspace:*" },
+  "devDependencies": { "typescript": "^5.8.0" }
+}

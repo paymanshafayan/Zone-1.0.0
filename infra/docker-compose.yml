@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # ─── PostgreSQL + PostGIS + pgvector ───
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: zone-postgres
+    environment:
+      POSTGRES_DB: zone
+      POSTGRES_USER: zone
+      POSTGRES_PASSWORD: zone_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zone"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis (no persistence) ───
+  redis:
+    image: redis:7-alpine
+    container_name: zone-redis
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── Zone API ───
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: api
+    container_name: zone-api
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://zone:zone_dev_password@postgres:5432/zone
+      REDIS_URL: redis://redis:6379
+      API_URL: http://localhost:3000
+      WS_URL: ws://localhost:3001/ws
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── Zone WebSocket ───
+  ws:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: ws
+    container_name: zone-ws
+    environment:
+      NODE_ENV: development
+      WS_PORT: 3001
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ─── Zone Worker ───
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: worker
+    container_name: zone-worker
+    environment:
+      NODE_ENV: development
+      REDIS_URL: redis://redis:6379
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
