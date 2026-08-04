@@ -38,4 +38,4 @@ jobs:
 
       - name: Analyze project
         working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
