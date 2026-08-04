@@ -3,7 +3,7 @@ on: [push, pull_request]
 env:
   FLUTTER_VERSION: '3.24.5'
   JAVA_VERSION: '17'
-  MOBILE_APP_DIR: apps/mobile
+  MOBILE_APP_DIR: /apps/mobile
 jobs:
   flutter-analyze:
     runs-on: ubuntu-latest
