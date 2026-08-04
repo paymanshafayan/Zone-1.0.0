@@ -10,6 +10,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:zone_app/core/edge/edge_processor.dart';
+import 'package:zone_app/features/voice/providers/voice_provider.dart';
 import 'package:zone_app/shared/services/notification_service.dart';
 import 'package:zone_app/shared/models/zone_models.dart';
 
