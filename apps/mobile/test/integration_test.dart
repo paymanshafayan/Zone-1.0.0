@@ -6,7 +6,7 @@
 ///   - Navigation (routes)
 ///   - Models (serialization)
 ///   - State management (providers)
-
+library integration_test;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:zone_app/core/edge/edge_processor.dart';
