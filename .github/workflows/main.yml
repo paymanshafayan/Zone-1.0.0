@@ -106,7 +106,8 @@ jobs:
         working-directory: ${{ env.MOBILE_APP_DIR }}/android
         run: |
           java -version
-          ./gradlew --version
+          flutter --version
+          flutter doctor -v
 
       - name: Install dependencies
         working-directory: ${{ env.MOBILE_APP_DIR }}
