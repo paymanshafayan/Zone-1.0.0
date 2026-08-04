@@ -6,8 +6,6 @@
 ///   - Connectivity service
 ///   - Cache service
 ///   - Profile persistence
-/// State management tests.
-library state_management_test;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:zone_app/core/edge/edge_processor.dart';
