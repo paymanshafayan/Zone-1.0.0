@@ -1,0 +1,19 @@
+name: Zone CI/CD
+on: [push, pull_request]
+env:
+  FLUTTER_VERSION: '3.24.5'
+  JAVA_VERSION: '17'
+  MOBILE_APP_DIR: apps/mobile
+jobs:
+  flutter-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {flutter-version: ${{ env.FLUTTER_VERSION }}, channel: stable, cache: true}
+      - name: Verify
+        run: test -d "${{ env.MOBILE_APP_DIR }}" || exit 1
+      - working-directory: ${{ env.MOBILE_APP_DIR }}
+        run: flutter pub get
+      - working-directory: ${{ env.MOBILE_APP_DIR }}
+        run: dart analyze lib/
