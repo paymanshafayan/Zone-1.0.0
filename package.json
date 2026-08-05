@@ -1,0 +1,26 @@
+{
+  "name": "zone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zone — Your Neighbourhood Friend",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "type-check": "turbo run type-check",
+    "db:generate": "turbo run db:generate",
+    "db:migrate": "turbo run db:migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "tsx": "^4.19.0"
+  }
+}

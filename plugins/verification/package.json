@@ -1,0 +1,9 @@
+{
+  "name": "@zone/plugin-verification",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": { "build": "tsc", "type-check": "tsc --noEmit" },
+  "dependencies": { "@zone/sdk": "workspace:*" },
+  "devDependencies": { "typescript": "^5.8.0" }
+}

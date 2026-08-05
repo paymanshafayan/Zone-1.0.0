@@ -1,0 +1,265 @@
+// Zone Database Schema — PostgreSQL + PostGIS + pgvector
+// Prisma schema with raw SQL extensions for PostGIS and pgvector
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Zone (Neighbourhood) ───
+
+model Zone {
+  id        String   @id @default(uuid())
+  name      String   // Persian name (e.g. "نارک")
+  nameEn    String   // English name (e.g. "Narak")
+  city      String
+  province  String
+  // PostGIS geometry stored via raw SQL
+  // bounds is a POLYGON in SRID 4326
+  boundsGeo String?  // WKT representation, converted to geometry via migration
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  persons       Person[]
+  memories      Memory[]
+  posts         Post[]
+  requests      Request[]
+  hearingSpaces HearingSpace[]
+
+  @@index([city])
+  @@index([name])
+  @@map("zones")
+}
+
+// ─── Person ───
+
+model Person {
+  id               String   @id @default(uuid())
+  displayName      String
+  zoneId           String
+  skills           String[] // self-declared skills
+  responseRate     Float    @default(0)
+  professionalStatus String @default("normal") // "normal" | "professional"
+  licenseId        String?  // license document ID
+  licenseNumber    String?  // unique license number from union
+  subscriptionExpiresAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  zone            Zone           @relation(fields: [zoneId], references: [id])
+  memories        Memory[]       @relation("MemorySource")
+  memoriesAbout   Memory[]       @relation("MemorySubject")
+  posts           Post[]
+  requests        Request[]
+  offers          Offer[]
+  subscriptions   UserSubscription[]
+  spaceMemberships SpaceMember[]
+
+  @@index([zoneId])
+  @@index([professionalStatus])
+  @@map("persons")
+}
+
+// ─── Memory ───
+
+model Memory {
+  id            String   @id @default(uuid())
+  zoneId        String
+  personId      String   // who the memory is about
+  skill         String
+  description   String
+  outcome       String   // "positive" | "negative" | "neutral"
+  sourcePersonId String  // who said it
+  confidence    Float    @default(0.5)
+  credibility   Float    @default(0.5) // with temporal decay
+  createdAt     DateTime @default(now())
+
+  zone         Zone   @relation(fields: [zoneId], references: [id])
+  sourcePerson Person @relation("MemorySource", fields: [sourcePersonId], references: [id])
+  aboutPerson  Person @relation("MemorySubject", fields: [personId], references: [id])
+
+  @@index([zoneId, skill])
+  @@index([personId])
+  @@index([sourcePersonId])
+  @@index([createdAt])
+  @@map("memories")
+}
+
+// ─── Professional Post ───
+
+model Post {
+  id          String   @id @default(uuid())
+  zoneId      String
+  providerId  String
+  mediaUrls   String[] // image/video URLs
+  mediaTypes  String[] // "image" | "video"
+  description String
+  tags        String[]
+  isSponsored Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  publishedAt DateTime @default(now())
+  expiresAt   DateTime? // when subscription expires
+
+  zone     Zone   @relation(fields: [zoneId], references: [id])
+  provider Person @relation(fields: [providerId], references: [id])
+
+  @@index([zoneId, tags])
+  @@index([providerId])
+  @@index([isActive])
+  @@index([publishedAt])
+  @@map("posts")
+}
+
+// ─── Tag ───
+
+model Tag {
+  id          String   @id @default(uuid())
+  path        String   @unique // e.g. "services/house_painting"
+  label       String   // Persian label
+  labelEn     String   // English label
+  parentId    String?
+  demandCount Int      @default(0)
+  isApproved  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  aliases     TagAlias[]
+  children    Tag[]    @relation("TagHierarchy")
+  parent      Tag?     @relation("TagHierarchy", fields: [parentId], references: [id])
+
+  @@index([path])
+  @@index([parentId])
+  @@index([isApproved])
+  @@map("tags")
+}
+
+model TagAlias {
+  id        String   @id @default(uuid())
+  tagId     String
+  alias     String
+  createdAt DateTime @default(now())
+
+  tag       Tag      @relation(fields: [tagId], references: [id])
+
+  @@unique([tagId, alias])
+  @@index([alias])
+  @@map("tag_aliases")
+}
+
+// ─── User Subscription (Tags) ───
+
+model UserSubscription {
+  id          String   @id @default(uuid())
+  personId    String
+  tagPattern  String   // e.g. "services/*" or "services/house_painting"
+  createdAt   DateTime @default(now())
+
+  person      Person   @relation(fields: [personId], references: [id])
+
+  @@index([personId])
+  @@index([tagPattern])
+  @@map("user_subscriptions")
+}
+
+// ─── Request ───
+
+model Request {
+  id          String   @id @default(uuid())
+  zoneId      String
+  requesterId String
+  description String
+  tags        String[]
+  urgency     String   @default("normal") // "normal" | "urgent" | "emergency"
+  radius      Int      @default(2500) // meters
+  status      String   @default("open") // "open" | "wave1" | "wave2" | "wave3" | "fulfilled" | "unknown" | "cancelled"
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  zone       Zone     @relation(fields: [zoneId], references: [id])
+  requester  Person   @relation(fields: [requesterId], references: [id])
+  offers     Offer[]
+
+  @@index([zoneId, status])
+  @@index([tags])
+  @@index([createdAt])
+  @@map("requests")
+}
+
+// ─── Offer ───
+
+model Offer {
+  id          String   @id @default(uuid())
+  requestId   String
+  providerId  String
+  amount      Float?
+  unit        String?
+  basis       String?
+  duration    String?
+  isConfirmed Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  request     Request  @relation(fields: [requestId], references: [id])
+  provider    Person   @relation(fields: [providerId], references: [id])
+
+  @@index([requestId])
+  @@index([providerId])
+  @@map("offers")
+}
+
+// ─── Hearing Space ───
+
+model HearingSpace {
+  id               String   @id @default(uuid())
+  zoneId           String
+  type             String   @default("dynamic") // "dynamic" | "persistent"
+  name             String?
+  tags             String[]
+  radius           Int?     // meters (for dynamic spaces)
+  reverberationTtl Int      @default(7200000) // ms (2 hours)
+  createdAt        DateTime @default(now())
+  expiresAt        DateTime?
+
+  zone       Zone          @relation(fields: [zoneId], references: [id])
+  members    SpaceMember[]
+
+  @@index([zoneId, type])
+  @@index([tags])
+  @@map("hearing_spaces")
+}
+
+model SpaceMember {
+  id        String   @id @default(uuid())
+  spaceId   String
+  personId  String
+  joinedAt  DateTime @default(now())
+  isActive  Boolean  @default(true)
+
+  space     HearingSpace @relation(fields: [spaceId], references: [id])
+  person    Person       @relation(fields: [personId], references: [id])
+
+  @@unique([spaceId, personId])
+  @@index([personId, isActive])
+  @@map("space_members")
+}
+
+// ─── Professional License ───
+
+model ProfessionalLicense {
+  id            String   @id @default(uuid())
+  personId      String
+  licenseNumber String   @unique
+  licenseImage  String   // URL to license image
+  profession    String
+  verifiedAt    DateTime?
+  verifiedBy    String?  // admin user ID
+  status        String   @default("pending") // "pending" | "verified" | "rejected"
+  createdAt     DateTime @default(now())
+
+  @@index([personId])
+  @@index([status])
+  @@index([licenseNumber])
+  @@map("professional_licenses")
+}
