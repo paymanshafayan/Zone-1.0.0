@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: mobile-build-${{ github.ref }}
+  group: mobile-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,7 +28,7 @@ jobs:
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: ${{ env.MOBILE_APP_DIR }}
@@ -37,12 +37,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
-          cache: true
-
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -50,32 +44,57 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+
+      - name: Show Flutter version
+        run: |
+          which flutter
+          flutter --version
+          dart --version
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK components
         run: |
           sdkmanager --install "platform-tools" "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
+          yes | sdkmanager --licenses || true
 
       - name: Flutter doctor
         run: flutter doctor -v
 
+      - name: Clean project
+        run: flutter clean
+
+      - name: Remove lockfile for fresh dependency resolution
+        run: rm -f pubspec.lock
+
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build release APK
-        run: flutter build apk --release -v
+      - name: Analyze dependency tree
+        run: flutter pub deps --style=compact
 
-      - name: Dump Gradle logs on failure
-        if: failure()
-        run: |
-          echo "==== Gradle properties ===="
-          ./android/gradlew -p android properties || true
-          echo "==== Last build outputs ===="
-          find android -type f \( -name "*.log" -o -name "mapping.txt" \) | head -100 || true
+      - name: Build release APK
+        run: flutter build apk --release
 
       - name: Verify APK exists
         run: test -f build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "==== Flutter doctor ===="
+          flutter doctor -v || true
+          echo "==== Pubspec lock ===="
+          cat pubspec.lock || true
+          echo "==== Gradle properties ===="
+          ./android/gradlew -p android properties || true
+          echo "==== Android logs ===="
+          find android -type f \( -name "*.log" -o -name "mapping.txt" \) | head -100 || true
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -87,7 +106,7 @@ jobs:
   build-ios:
     name: Build iOS App (No Codesign)
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: ${{ env.MOBILE_APP_DIR }}
@@ -100,23 +119,44 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
-          cache: true
+
+      - name: Show Flutter version
+        run: |
+          which flutter
+          flutter --version
+          dart --version
 
       - name: Flutter doctor
         run: flutter doctor -v
+
+      - name: Clean project
+        run: flutter clean
+
+      - name: Remove lockfile for fresh dependency resolution
+        run: rm -f pubspec.lock
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Install CocoaPods dependencies
         working-directory: ${{ env.MOBILE_APP_DIR }}/ios
-        run: pod install --repo-update
+        run: |
+          pod repo update
+          pod install
 
       - name: Build iOS (no codesign)
         run: flutter build ios --release --no-codesign
 
       - name: Verify iOS app exists
         run: test -d build/ios/iphoneos/Runner.app
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "==== Flutter doctor ===="
+          flutter doctor -v || true
+          echo "==== Pubspec lock ===="
+          cat pubspec.lock || true
 
       - name: Upload iOS artifact
         uses: actions/upload-artifact@v4
