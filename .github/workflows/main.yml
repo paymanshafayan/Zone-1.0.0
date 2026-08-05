@@ -1,1 +1,81 @@
+
 c8f138d ci: build mobile artifacts without analysis gate
+
+name: Flutter Build APK & IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/main.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.24.5'
+  JAVA_VERSION: '17'
+  MOBILE_APP_DIR: apps/mobile
+  ANDROID_API_LEVEL: '34'
+  ANDROID_BUILD_TOOLS: '34.0.0'
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: ${{ env.MOBILE_APP_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release -v
+
+      - name: Dump Gradle logs on failure
+        if: failure()
+        run: |
+          echo "==== Gradle properties ===="
+          ./android/gradlew -p android properties || true
+          echo "==== Last build outputs ===="
+          find android -type f \( -name "*.log" -o -name "mapping.txt" \) | head -100 || true
+
+      - name: Verify APK exists
