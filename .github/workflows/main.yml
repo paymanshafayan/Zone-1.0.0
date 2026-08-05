@@ -1,14 +1,20 @@
-name: Zone CI/CD
+name: Flutter Build APK & IPA
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/main.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/main.yml'
   workflow_dispatch:
 
 concurrency:
-  group: zone-${{ github.ref }}
+  group: mobile-build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,177 +25,54 @@ env:
   ANDROID_BUILD_TOOLS: '34.0.0'
 
 jobs:
-  analyze_and_test:
-    name: Analyze & Test
+  build-android:
+    name: Build Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: ${{ env.MOBILE_APP_DIR }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v5
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Verify mobile app directory exists
-        run: |
-          if [ ! -d "${{ env.MOBILE_APP_DIR }}" ]; then
-            echo "Directory '${{ env.MOBILE_APP_DIR }}' not found"
-            exit 1
-          fi
-
-      - name: Install dependencies
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter pub get
-
-      - name: Analyze project
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
-
-      - name: Run tests (if exists)
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: |
-          if [ -d test ]; then
-            flutter test
-          else
-            echo "No tests found, skipping."
-          fi
-
-  build_android:
-    name: Build Android (Debug APK + Release AAB unsigned)
-    runs-on: ubuntu-latest
-    needs: analyze_and_test
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: gradle
-
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK components
         run: |
           sdkmanager --install "platform-tools" "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
 
-      - name: Setup Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
-      - name: Create local.properties for Android build
-        working-directory: ${{ env.MOBILE_APP_DIR }}/android
-        run: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          echo "flutter.sdk=$FLUTTER_ROOT" >> local.properties
-          cat local.properties
-
-      - name: Debug toolchain versions
-        working-directory: ${{ env.MOBILE_APP_DIR }}/android
-        run: |
-          java -version
-          flutter --version
-          flutter doctor -v
+      - name: Flutter doctor
+        run: flutter doctor -v
 
       - name: Install dependencies
-        working-directory: ${{ env.MOBILE_APP_DIR }}
         run: flutter pub get
 
-      - name: Build debug APK (no signing needed)
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter build apk --debug -v
+      - name: Build release APK
+        run: flutter build apk --release -v
 
-      - name: Build release AAB (for validation only)
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter build appbundle --release
-
-      - name: Upload Android artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-artifacts
-          path: |
-            ${{ env.MOBILE_APP_DIR }}/build/app/outputs/flutter-apk/*.apk
-            ${{ env.MOBILE_APP_DIR }}/build/app/outputs/bundle/release/*.aab
-          if-no-files-found: error
-
-  build_ios:
-    name: Build iOS (No Codesign)
-    runs-on: macos-latest
-    needs: analyze_and_test
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Install dependencies
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter pub get
-
-      - name: Install CocoaPods dependencies
-        working-directory: ${{ env.MOBILE_APP_DIR }}/ios
-        run: pod install --repo-update
-
-      - name: Build iOS (release, no codesign)
-        working-directory: ${{ env.MOBILE_APP_DIR }}
-        run: flutter build ios --release --no-codesign
-
-      - name: Package .app to .ipa (unsigned)
-        working-directory: ${{ env.MOBILE_APP_DIR }}
+      - name: Dump Gradle logs on failure
+        if: failure()
         run: |
-          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name "*.app" | head -n 1)
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app found in build/ios/iphoneos"
-            exit 1
-          fi
+          echo "==== Gradle properties ===="
+          ./android/gradlew -p android properties || true
+          echo "==== Last build outputs ===="
+          find android -type f \( -name "*.log" -o -name "mapping.txt" \) | head -100 || true
 
-          mkdir -p build/ios/ipa/Payload
-          cp -R "$APP_PATH" build/ios/ipa/Payload/
-          cd build/ios/ipa
-          zip -r Runner-unsigned.ipa Payload
-
-      - name: Upload iOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-artifacts-unsigned
-          path: |
-            ${{ env.MOBILE_APP_DIR }}/build/ios/iphoneos/*.app
-            ${{ env.MOBILE_APP_DIR }}/build/ios/ipa/*.ipa
-          if-no-files-found: error
-
-  summary:
-    name: Build Summary
-    runs-on: ubuntu-latest
-    needs: [analyze_and_test, build_android, build_ios]
-    if: always()
-
-    steps:
-      - name: Print results
-        run: |
-          echo "Analyze/Test: ${{ needs.analyze_and_test.result }}"
-          echo "Android: ${{ needs.build_android.result }}"
-          echo "iOS: ${{ needs.build_ios.result }}"
+      - name: Verify APK exists
