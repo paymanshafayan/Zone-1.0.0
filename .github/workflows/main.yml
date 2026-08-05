@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: '3.44.8'
+  FLUTTER_VERSION: '3.24.5'
   JAVA_VERSION: '17'
   MOBILE_APP_DIR: apps/mobile
   ANDROID_API_LEVEL: '34'
