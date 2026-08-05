@@ -1,3 +1,6 @@
+
+c8f138d ci: build mobile artifacts without analysis gate
+
 name: Flutter Build APK & IPA
 
 on:
