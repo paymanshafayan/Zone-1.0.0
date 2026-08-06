@@ -1,0 +1,32 @@
+{
+  "name": "Zone – Flutter mobile (matches CI: Flutter 3.24.5 / Android SDK 34)",
+
+  // Pinned to the exact Flutter version used in .github/workflows/main.yml
+  "image": "ghcr.io/cirruslabs/flutter:3.24.5",
+
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Dart-Code.dart-code",
+        "Dart-Code.flutter"
+      ],
+      "settings": {
+        "dart.flutterSdkPath": "/sdks/flutter"
+      }
+    }
+  },
+
+  // Accept Android licenses + install the exact platform/build-tools CI uses,
+  // then warm the pub cache for apps/mobile.
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+
+  "remoteUser": "root",
+
+  // Bump if Gradle/emulator work feels slow on the default Codespace machine.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb"
+  }
+}
