@@ -9,9 +9,11 @@ library features_professional_screens_create_post_screen;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../shared/services/navigation_service.dart';
 import '../providers/post_creation_provider.dart';
 
 class CreatePostScreen extends ConsumerStatefulWidget {
@@ -261,7 +263,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   void _showMediaPicker(BuildContext context) {
     showModalBottomSheet(
       context: context,
-      builder: (context) => SafeArea(
+      builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -269,17 +271,16 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             children: [
               Text(
                 'افزودن رسانه',
-                style: Theme.of(context).textTheme.titleMedium,
+                style: Theme.of(sheetContext).textTheme.titleMedium,
               ),
               const SizedBox(height: 16),
               ListTile(
                 leading: const Icon(Icons.camera_alt),
                 title: const Text('دوربین'),
-                subtitle: const Text('عکس یا ویدیو بگیر'),
+                subtitle: const Text('عکس بگیر'),
                 onTap: () {
-                  Navigator.pop(context);
-                  // In production: use image_picker
-                  ref.read(postCreationProvider.notifier).addMedia('camera_placeholder.jpg');
+                  Navigator.pop(sheetContext);
+                  _pickMedia(ImageSource.camera, isVideo: false);
                 },
               ),
               ListTile(
@@ -287,9 +288,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 title: const Text('گالری'),
                 subtitle: const Text('از گالری انتخاب کن'),
                 onTap: () {
-                  Navigator.pop(context);
-                  // In production: use image_picker
-                  ref.read(postCreationProvider.notifier).addMedia('gallery_placeholder.jpg');
+                  Navigator.pop(sheetContext);
+                  _pickMedia(ImageSource.gallery, isVideo: false);
                 },
               ),
               ListTile(
@@ -297,9 +297,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 title: const Text('ویدیو'),
                 subtitle: Text('حداکثر ${AppConstants.maxVideoDurationSeconds} ثانیه'),
                 onTap: () {
-                  Navigator.pop(context);
-                  // In production: use image_picker with video
-                  ref.read(postCreationProvider.notifier).addMedia('video_placeholder.mp4');
+                  Navigator.pop(sheetContext);
+                  _pickMedia(ImageSource.gallery, isVideo: true);
                 },
               ),
             ],
@@ -309,10 +308,37 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
   }
 
+  /// Pick an image/video and add it to the draft.
+  ///
+  /// Video length (≤ ${AppConstants.maxVideoDurationSeconds}s) is enforced
+  /// server-side when the media is uploaded.
+  Future<void> _pickMedia(ImageSource source, {required bool isVideo}) async {
+    final picker = ImagePicker();
+    try {
+      final XFile? picked = isVideo
+          ? await picker.pickVideo(source: source)
+          : await picker.pickImage(
+              source: source, maxWidth: 1600, imageQuality: 85);
+      if (picked != null) {
+        ref.read(postCreationProvider.notifier).addMedia(picked.path);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('انتخاب رسانه ممکن نشد. دسترسی رو بررسی کن.'),
+            backgroundColor: AppTheme.accentEmergency,
+          ),
+        );
+      }
+    }
+  }
+
   void _handleSubmit() async {
+    final auth = ref.read(authProvider);
     final success = await ref.read(postCreationProvider.notifier).submit(
-      zoneId: 'default',
-      providerId: 'current_user',
+      zoneId: auth.zoneId ?? 'default_zone',
+      providerId: auth.personId ?? 'anonymous',
     );
 
     if (success && mounted) {

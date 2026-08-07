@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/services/navigation_service.dart';
+import '../../settings/providers/profile_provider.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
@@ -259,11 +260,33 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   void _finishOnboarding() {
-    ref.read(authProvider.notifier).login(
-      'user_${DateTime.now().millisecondsSinceEpoch}',
-      'کاربر',
-      _selectedNeighbourhood.isEmpty ? 'default' : _selectedNeighbourhood,
-    );
+    final authState = ref.read(authProvider);
+    final personId =
+        authState.personId ?? 'user_${DateTime.now().millisecondsSinceEpoch}';
+    final zoneId =
+        _selectedNeighbourhood.isEmpty ? 'default_zone' : _selectedNeighbourhood;
+
+    // Tag labels (Persian) → subscription patterns
+    const tagPatterns = {
+      'خدمات': 'services/*',
+      'اجتماعی': 'social/*',
+      'حمایتی': 'support/*',
+      'فوری': 'urgency/*',
+    };
+    final subscribedTags =
+        _selectedTags.map((t) => tagPatterns[t] ?? t).toList();
+
+    // Persist everything chosen during onboarding and mark the account
+    // as an existing user (so the router leaves /onboarding for good).
+    ref.read(profileProvider.notifier).initializeFromOnboarding(
+          personId: personId,
+          displayName: authState.displayName ?? 'کاربر',
+          zoneId: zoneId,
+          skills: List<String>.from(_selectedSkills),
+          subscribedTags: subscribedTags.isEmpty
+              ? const ['services/*', 'urgency/*', 'social/*', 'support/*']
+              : subscribedTags,
+        );
   }
 }
 

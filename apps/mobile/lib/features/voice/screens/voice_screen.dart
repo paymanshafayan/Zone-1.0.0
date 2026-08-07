@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../shared/services/navigation_service.dart';
 import '../providers/voice_provider.dart';
 import '../widgets/voice_bubble.dart';
 import '../widgets/voice_input_bar.dart';
@@ -23,6 +24,7 @@ class VoiceScreen extends ConsumerStatefulWidget {
 
 class _VoiceScreenState extends ConsumerState<VoiceScreen> {
   final ScrollController _scrollController = ScrollController();
+  int _lastConversationLength = 0;
 
   @override
   void dispose() {
@@ -42,10 +44,27 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> {
     });
   }
 
+  /// Route input through the voice pipeline with the caller's identity so
+  /// the backend can attribute memories/demands to the right person.
+  void _process(String text) {
+    final auth = ref.read(authProvider);
+    ref.read(voiceProvider.notifier).processInput(
+          text,
+          personId: auth.personId,
+          zoneId: auth.zoneId,
+        );
+  }
+
   @override
   Widget build(BuildContext context) {
     final voiceState = ref.watch(voiceProvider);
-    _scrollToBottom();
+
+    // Only auto-scroll when a new conversation item actually arrived —
+    // scrolling on every rebuild yanks the list away from the user.
+    if (voiceState.conversation.length != _lastConversationLength) {
+      _lastConversationLength = voiceState.conversation.length;
+      _scrollToBottom();
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -116,9 +135,7 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> {
             isRecording: voiceState.state == VoiceState.recording,
             isSpeaking: voiceState.isSpeaking,
             liveTranscript: voiceState.liveTranscript,
-            onTextChanged: (text) {
-              ref.read(voiceProvider.notifier).processInput(text);
-            },
+            onTextChanged: _process,
             onRecordingStart: () {
               ref.read(voiceProvider.notifier).startRecording();
             },
@@ -188,7 +205,7 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> {
 
   Widget _buildExamplePrompt(BuildContext context, String text) {
     return InkWell(
-      onTap: () => ref.read(voiceProvider.notifier).processInput(text),
+      onTap: () => _process(text),
       borderRadius: BorderRadius.circular(12),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),

@@ -11,12 +11,14 @@ import '../../../shared/models/zone_models.dart';
 
 class PostCard extends StatelessWidget {
   final Post post;
+  final bool isLiked;
   final VoidCallback? onLike;
   final VoidCallback? onTap;
 
   const PostCard({
     super.key,
     required this.post,
+    this.isLiked = false,
     this.onLike,
     this.onTap,
   });
@@ -112,14 +114,12 @@ class PostCard extends StatelessWidget {
                   Row(
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.favorite_border, size: 20),
+                        icon: Icon(
+                          isLiked ? Icons.favorite : Icons.favorite_border,
+                          size: 20,
+                          color: isLiked ? AppTheme.accentEmergency : null,
+                        ),
                         onPressed: onLike,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.share_outlined, size: 20),
-                        onPressed: () {},
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                       ),

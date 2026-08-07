@@ -2,7 +2,12 @@
 ///
 /// All constants used throughout the app.
 /// Centralized here for easy maintenance.
+///
+/// URLs live in [Environment] — AppConstants re-exports them so existing
+/// call-sites keep working and the values can never drift apart.
 library core_constants_app_constants;
+
+import 'environment.dart';
 
 class AppConstants {
   AppConstants._();
@@ -13,14 +18,9 @@ class AppConstants {
   static const String appVersion = '1.0.0';
 
   // ─── API ───
-  static const String apiBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:3000', // Android emulator → localhost
-  );
-  static const String wsBaseUrl = String.fromEnvironment(
-    'WS_BASE_URL',
-    defaultValue: 'ws://10.0.2.2:3001',
-  );
+  // Single source of truth: Environment (see environment.dart).
+  static const String apiBaseUrl = Environment.apiBaseUrl;
+  static const String wsBaseUrl = Environment.wsBaseUrl;
 
   // ─── Timing ───
   static const Duration voiceAnimationDuration = Duration(milliseconds: 300);

@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/models/zone_models.dart';
 import '../../../shared/widgets/shared_widgets.dart';
+import '../providers/visual_provider.dart' show visualFeedProvider;
 
 class PostDetailScreen extends ConsumerWidget {
   final Post post;
@@ -86,22 +87,24 @@ class PostDetailScreen extends ConsumerWidget {
                   // ─── Actions ───
                   Row(
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.favorite_border),
-                        onPressed: () {
-                          // In production: like post via API
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.share_outlined),
-                        onPressed: () {
-                          // In production: share post
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.phone_outlined),
-                        onPressed: () {
-                          // In production: contact provider
+                      Builder(
+                        builder: (context) {
+                          final isLiked = ref
+                              .watch(visualFeedProvider)
+                              .likedPostIds
+                              .contains(post.id);
+                          return IconButton(
+                            icon: Icon(
+                              isLiked
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
+                              color:
+                                  isLiked ? AppTheme.accentEmergency : null,
+                            ),
+                            onPressed: () => ref
+                                .read(visualFeedProvider.notifier)
+                                .likePost(post.id),
+                          );
                         },
                       ),
                     ],

@@ -1,6 +1,5 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../constants/app_constants.dart';
 import '../utils/logger.dart';
@@ -11,15 +10,10 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   return ApiClient();
 });
 
-final wsProvider = Provider.family<WebSocketChannel, String>((ref, path) {
-  final uri = Uri.parse('${AppConstants.wsBaseUrl}$path');
-  return WebSocketChannel.connect(uri);
-});
-
 /// Zone API Client
 ///
 /// Centralized HTTP client for all API communication.
-/// Uses Dio for HTTP and WebSocket for real-time.
+/// Uses Dio for HTTP. Real-time (hearing spaces) lives in WebSocketService.
 class ApiClient {
   late final Dio _dio;
   final ZoneLogger _logger = ZoneLogger('ApiClient');

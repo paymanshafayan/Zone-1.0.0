@@ -1,7 +1,13 @@
 /// WebSocket Service — Hearing Space real-time connection
 ///
 /// Matches backend: apps/ws/src/index.ts
-/// Protocol: identify, join, leave, speak, list_spaces, ping
+///
+/// Client → Server: {type, payload}
+///   identify | join | leave | speak | list_spaces | ping
+///
+/// Server → Client: {type, payload}
+///   identified | joined | left | reverberation | speech |
+///   presence | space_list | system | error | pong
 
 import 'dart:async';
 import 'dart:convert';
@@ -11,7 +17,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/logger.dart';
-import '../../shared/models/zone_models.dart';
 
 // ─── WebSocket Provider ───
 
@@ -19,59 +24,99 @@ final wsServiceProvider = Provider<WebSocketService>((ref) {
   return WebSocketService();
 });
 
-// ─── WS Message Types ───
+// ─── WS Message Types (server → client) ───
 
 enum WsMessageType {
-  identify,
-  join,
-  leave,
-  speak,
-  listSpaces,
-  ping,
-  spaceCreated,
-  spaceExpired,
-  memberJoined,
-  memberLeft,
-  messageReceived,
-  presenceUpdate,
+  identified,
+  joined,
+  left,
+  reverberation,
+  speech,
+  presence,
+  spaceList,
+  system,
   error,
   pong,
+  unknown,
 }
 
 // ─── WS Message ───
 
 class WsMessage {
   final WsMessageType type;
-  final Map<String, dynamic> data;
+  final Map<String, dynamic> payload;
 
-  const WsMessage({required this.type, required this.data});
+  const WsMessage({required this.type, required this.payload});
 
   factory WsMessage.fromJson(Map<String, dynamic> json) {
     WsMessageType type;
     switch (json['type']) {
-      case 'identify': type = WsMessageType.identify; break;
-      case 'join': type = WsMessageType.join; break;
-      case 'leave': type = WsMessageType.leave; break;
-      case 'speak': type = WsMessageType.speak; break;
-      case 'list_spaces': type = WsMessageType.listSpaces; break;
-      case 'ping': type = WsMessageType.ping; break;
-      case 'space_created': type = WsMessageType.spaceCreated; break;
-      case 'space_expired': type = WsMessageType.spaceExpired; break;
-      case 'member_joined': type = WsMessageType.memberJoined; break;
-      case 'member_left': type = WsMessageType.memberLeft; break;
-      case 'message_received': type = WsMessageType.messageReceived; break;
-      case 'presence_update': type = WsMessageType.presenceUpdate; break;
-      case 'error': type = WsMessageType.error; break;
-      case 'pong': type = WsMessageType.pong; break;
-      default: type = WsMessageType.error;
+      case 'identified':
+        type = WsMessageType.identified;
+        break;
+      case 'joined':
+        type = WsMessageType.joined;
+        break;
+      case 'left':
+        type = WsMessageType.left;
+        break;
+      case 'reverberation':
+        type = WsMessageType.reverberation;
+        break;
+      case 'speech':
+        type = WsMessageType.speech;
+        break;
+      case 'presence':
+        type = WsMessageType.presence;
+        break;
+      case 'space_list':
+        type = WsMessageType.spaceList;
+        break;
+      case 'system':
+        type = WsMessageType.system;
+        break;
+      case 'error':
+        type = WsMessageType.error;
+        break;
+      case 'pong':
+        type = WsMessageType.pong;
+        break;
+      default:
+        type = WsMessageType.unknown;
     }
-    return WsMessage(type: type, data: json['data'] ?? {});
+    final payload = json['payload'];
+    return WsMessage(
+      type: type,
+      payload: payload is Map<String, dynamic> ? payload : <String, dynamic>{},
+    );
   }
+}
 
-  String toJson() => jsonEncode({
-    'type': type.name,
-    'data': data,
+/// Lightweight space descriptor as returned by `space_list` and `joined`.
+/// The WS payloads are partial (no zoneId/radius/createdAt), so parsing
+/// is deliberately tolerant — every missing field gets a safe default.
+class SpaceSummary {
+  final String id;
+  final String type; // 'dynamic' | 'persistent'
+  final String? name;
+  final List<String> tags;
+  final int memberCount;
+
+  const SpaceSummary({
+    required this.id,
+    required this.type,
+    this.name,
+    this.tags = const [],
+    this.memberCount = 0,
   });
+
+  factory SpaceSummary.fromJson(Map<String, dynamic> json) => SpaceSummary(
+        id: json['id'] as String? ?? '',
+        type: json['type'] as String? ?? 'persistent',
+        name: json['name'] as String?,
+        tags: List<String>.from(json['tags'] as List? ?? const []),
+        memberCount: json['memberCount'] as int? ?? 0,
+      );
 }
 
 // ─── WebSocket Service ───
@@ -85,122 +130,205 @@ class WebSocketService {
   String? _personId;
   String? _zoneId;
   bool _isConnecting = false;
+  Completer<void>? _identifiedCompleter;
 
   Stream<WsMessage> get messages => _messageController.stream;
   bool get isConnected => _channel != null;
+  String? get personId => _personId;
+  String? get zoneId => _zoneId;
 
-  /// Connect to the WebSocket server
+  /// Connect to the WebSocket server (if not already connected).
+  ///
+  /// Resolves once the server has acknowledged the `identify` message
+  /// (so callers can safely `join`/`speak` right away).
   Future<void> connect({
     required String personId,
     required String zoneId,
   }) async {
-    if (_isConnecting) return;
+    if (_channel != null &&
+        _personId == personId &&
+        _zoneId == zoneId &&
+        (_identifiedCompleter?.isCompleted ?? false)) {
+      return; // Already connected and identified.
+    }
+    if (_isConnecting && _identifiedCompleter != null) {
+      return _identifiedCompleter!.future;
+    }
+
     _isConnecting = true;
     _personId = personId;
     _zoneId = zoneId;
+
+    // Tear down any previous channel/completer BEFORE creating the new
+    // identification completer, so the teardown can't clobber it.
+    _teardownChannel();
+    _identifiedCompleter = Completer<void>();
 
     try {
       final uri = Uri.parse('${AppConstants.wsBaseUrl}/ws');
       _channel = WebSocketChannel.connect(uri);
 
-      // Listen for messages
       _channel!.stream.listen(
-        (data) {
-          try {
-            final json = jsonDecode(data as String) as Map<String, dynamic>;
-            final message = WsMessage.fromJson(json);
-            _messageController.add(message);
-          } catch (e) {
-            _logger.error('Failed to parse WS message', e);
-          }
-        },
-        onDone: () {
-          _logger.warning('WebSocket connection closed');
-          _scheduleReconnect();
-        },
-        onError: (error) {
+        _handleIncoming,
+        onDone: _handleClosed,
+        onError: (Object error) {
           _logger.error('WebSocket error', error);
-          _scheduleReconnect();
+          _handleClosed();
         },
+        cancelOnError: true,
       );
 
-      // Identify ourselves
-      _send(WsMessage(type: WsMessageType.identify, data: {
+      // Identify ourselves — the IO channel buffers outbound messages
+      // until the socket is actually open, so this is safe to send now.
+      _send('identify', {
         'personId': personId,
         'zoneId': zoneId,
-      }));
+      });
 
-      // Start heartbeat
       _startHeartbeat();
+      _logger.info('Connecting to WebSocket server…');
 
-      _logger.info('Connected to WebSocket server');
+      // Wait until the server confirms identification (bounded).
+      await _identifiedCompleter!.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          _logger.warning('Timed out waiting for WS identification');
+        },
+      );
     } catch (e) {
       _logger.error('Failed to connect to WebSocket', e);
-      _scheduleReconnect();
+      _handleClosed();
     } finally {
       _isConnecting = false;
     }
   }
 
-  /// Disconnect from the WebSocket server
+  /// Disconnect from the WebSocket server.
   void disconnect() {
-    _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();
-    _channel?.sink.close();
-    _channel = null;
+    _reconnectTimer = null;
+    _teardownChannel();
     _logger.info('Disconnected from WebSocket server');
   }
 
-  /// Join a hearing space
+  /// Join an existing hearing space.
   void joinSpace(String spaceId) {
-    _send(WsMessage(type: WsMessageType.join, data: {
-      'spaceId': spaceId,
-    }));
+    _send('join', {'spaceId': spaceId});
   }
 
-  /// Leave a hearing space
+  /// Create (and join) a persistent user-created space.
+  void createPersistentSpace({
+    required String zoneId,
+    required String name,
+    List<String> tags = const [],
+    String? description,
+  }) {
+    _send('join', {
+      'createPersistent': {
+        'zoneId': zoneId,
+        'name': name,
+        'tags': tags,
+        if (description != null) 'description': description,
+      },
+    });
+  }
+
+  /// Leave the current hearing space.
   void leaveSpace(String spaceId) {
-    _send(WsMessage(type: WsMessageType.leave, data: {
-      'spaceId': spaceId,
-    }));
+    _send('leave', {'spaceId': spaceId});
   }
 
-  /// Speak in a hearing space
-  void speak(String spaceId, String text, {List<String>? tags}) {
-    _send(WsMessage(type: WsMessageType.speak, data: {
-      'spaceId': spaceId,
+  /// Speak in the current hearing space. The server routes the message
+  /// to whatever space this connection has joined.
+  void speak(String text, {List<String>? tags}) {
+    _send('speak', {
       'text': text,
-      'tags': tags ?? [],
-    }));
+      'tags': tags ?? const <String>[],
+    });
   }
 
-  /// List available spaces
-  void listSpaces() {
-    _send(WsMessage(type: WsMessageType.listSpaces, data: {}));
+  /// List available spaces in a zone.
+  void listSpaces(String zoneId, {List<String>? tags}) {
+    _send('list_spaces', {
+      'zoneId': zoneId,
+      'tags': tags ?? const <String>[],
+    });
   }
 
   // ─── Private ───
 
-  void _send(WsMessage message) {
+  void _send(String type, Map<String, dynamic> payload) {
     try {
-      _channel?.sink.add(message.toJson());
+      final channel = _channel;
+      if (channel == null) {
+        _logger.warning('Tried to send "$type" while disconnected');
+        return;
+      }
+      channel.sink.add(jsonEncode({'type': type, 'payload': payload}));
     } catch (e) {
       _logger.error('Failed to send WS message', e);
     }
   }
 
+  void _handleIncoming(dynamic data) {
+    try {
+      final json = jsonDecode(data as String) as Map<String, dynamic>;
+      final message = WsMessage.fromJson(json);
+
+      if (message.type == WsMessageType.identified) {
+        _logger.info('Identified on WebSocket server');
+        if (!(_identifiedCompleter?.isCompleted ?? true)) {
+          _identifiedCompleter!.complete();
+        }
+      }
+
+      if (message.type == WsMessageType.error) {
+        _logger.warning('WS server error: ${message.payload['error']}');
+      }
+
+      _messageController.add(message);
+    } catch (e) {
+      _logger.error('Failed to parse WS message', e);
+    }
+  }
+
+  void _handleClosed() {
+    if (_channel == null) return; // Already cleaned up.
+    _logger.warning('WebSocket connection closed');
+    _teardownChannel();
+    _scheduleReconnect();
+  }
+
+  void _teardownChannel() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    final channel = _channel;
+    _channel = null;
+    if (channel != null) {
+      unawaited(channel.sink.close());
+    }
+    if (!(_identifiedCompleter?.isCompleted ?? true)) {
+      _identifiedCompleter!.completeError(
+        StateError('WebSocket closed before identification'),
+      );
+    }
+    _identifiedCompleter = null;
+  }
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(AppConstants.presenceHeartbeat, (_) {
-      _send(const WsMessage(type: WsMessageType.ping, data: {}));
+      _send('ping', {});
     });
   }
 
   void _scheduleReconnect() {
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 5), () {
-      if (_personId != null && _zoneId != null) {
-        connect(personId: _personId!, zoneId: _zoneId!);
+      final personId = _personId;
+      final zoneId = _zoneId;
+      if (personId != null && zoneId != null) {
+        connect(personId: personId, zoneId: zoneId);
       }
     });
   }

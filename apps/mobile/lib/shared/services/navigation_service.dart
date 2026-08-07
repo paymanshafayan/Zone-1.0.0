@@ -112,19 +112,22 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/post/:id',
         builder: (context, state) {
-          // In production: fetch post from API
+          // The feed passes the full Post via `extra`; fall back to a
+          // shell for cold deep-links until fetch-by-id is wired.
+          final post = state.extra is Post ? state.extra as Post : null;
           return PostDetailScreen(
-            post: Post(
-              id: state.pathParameters['id'] ?? '',
-              zoneId: 'default',
-              providerId: 'provider_1',
-              media: [],
-              description: 'پست حرفه‌ای نمونه',
-              tags: ['services/house_painting'],
-              isSponsored: true,
-              isActive: true,
-              publishedAt: DateTime.now(),
-            ),
+            post: post ??
+                Post(
+                  id: state.pathParameters['id'] ?? '',
+                  zoneId: 'default',
+                  providerId: 'provider_1',
+                  media: [],
+                  description: 'پست حرفه‌ای نمونه',
+                  tags: ['services/house_painting'],
+                  isSponsored: true,
+                  isActive: true,
+                  publishedAt: DateTime.now(),
+                ),
           );
         },
       ),
@@ -181,10 +184,15 @@ final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
 class AuthNotifier extends StateNotifier<AuthState> {
   AuthNotifier() : super(const AuthState());
 
-  void login(String personId, String displayName, String zoneId) {
+  void login(
+    String personId,
+    String displayName,
+    String zoneId, {
+    bool isNewUser = false,
+  }) {
     state = AuthState(
       isAuthenticated: true,
-      isNewUser: false,
+      isNewUser: isNewUser,
       personId: personId,
       displayName: displayName,
       zoneId: zoneId,
