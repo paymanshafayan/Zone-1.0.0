@@ -65,3 +65,20 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+// ─── TEMPORARY CI DIAGNOSTICS ───
+// Flutter's `flutter build apk` succeeds but cannot find the release APK.
+// Log the effective build dirs and every produced APK (logger.error prints
+// even under gradle -q) so CI logs reveal the divergence.
+afterEvaluate {
+    tasks.findByName("assembleRelease")?.doLast {
+        logger.error("ZONE-CI app.buildDir=${layout.buildDirectory.get().asFile.absolutePath}")
+        logger.error("ZONE-CI root.buildDir=${rootProject.layout.buildDirectory.get().asFile.absolutePath}")
+        val apks = fileTree(layout.buildDirectory.get()) { include("**/*.apk") }
+        if (apks.isEmpty) {
+            logger.error("ZONE-CI NO-APK under app buildDir")
+        } else {
+            apks.forEach { logger.error("ZONE-CI APK: ${it.absolutePath}") }
+        }
+    }
+}
