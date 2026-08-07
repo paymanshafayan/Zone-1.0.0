@@ -167,6 +167,11 @@ export enum SpaceType {
   PERSISTENT = 'persistent',
 }
 
+/**
+ * ⚠️ This enum is in MILLISECONDS.
+ * The redis package has a separate enum in SECONDS.
+ * Use this one for in-memory calculations; use the redis one for TTL values.
+ */
 export enum ReverberationDuration {
   URGENT = 15 * 60 * 1000,     // 15 minutes
   SERVICE = 2 * 60 * 60 * 1000, // 2 hours

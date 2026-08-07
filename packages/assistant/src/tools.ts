@@ -332,22 +332,22 @@ export const ASSISTANT_TOOLS: Record<string, ToolDefinition> = {
 
 export class ToolExecutor {
   private logger: Logger;
-  private memoryService: any; // Will be injected
-  private postService: any;   // Will be injected
-  private waveService: any;   // Will be injected
+  private memoryService: MemoryService | null;
+  private postService: PostService | null;
+  private waveService: { createDynamicSpace(input: any): Promise<any> } | null;
   private learningService: LearningService | null; // Phase 8
 
   constructor(deps: {
-    memoryService?: any;
-    postService?: any;
-    waveService?: any;
-    learningService?: LearningService;
+    memoryService?: MemoryService | null;
+    postService?: PostService | null;
+    waveService?: { createDynamicSpace(input: any): Promise<any> } | null;
+    learningService?: LearningService | null;
   } = {}) {
     this.logger = new Logger({ context: { service: 'tool-executor' } });
-    this.memoryService = deps.memoryService;
-    this.postService = deps.postService;
-    this.waveService = deps.waveService;
-    this.learningService = deps.learningService || null;
+    this.memoryService = deps.memoryService ?? null;
+    this.postService = deps.postService ?? null;
+    this.waveService = deps.waveService ?? null;
+    this.learningService = deps.learningService ?? null;
   }
 
   /**

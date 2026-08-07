@@ -60,8 +60,10 @@ async function main() {
   const antiNuisance = new AntiNuisanceService();
   const waveService = new WaveService(personRegistry, antiNuisance);
 
-  // Seed some sample persons for development
-  seedSamplePersons(personRegistry);
+  // Seed some sample persons for development only
+  if (process.env.NODE_ENV !== 'production') {
+    seedSamplePersons(personRegistry);
+  }
 
   const connection = {
     host: process.env.REDIS_HOST || 'localhost',

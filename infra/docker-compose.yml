@@ -5,6 +5,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: zone-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: zone
       POSTGRES_USER: zone
@@ -24,6 +25,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: zone-redis
+    restart: unless-stopped
     command: redis-server --save "" --appendonly no
     ports:
       - "6379:6379"
@@ -40,6 +42,7 @@ services:
       dockerfile: infra/Dockerfile
       target: api
     container_name: zone-api
+    restart: unless-stopped
     environment:
       NODE_ENV: development
       PORT: 3000
@@ -62,6 +65,7 @@ services:
       dockerfile: infra/Dockerfile
       target: ws
     container_name: zone-ws
+    restart: unless-stopped
     environment:
       NODE_ENV: development
       WS_PORT: 3001
@@ -79,6 +83,7 @@ services:
       dockerfile: infra/Dockerfile
       target: worker
     container_name: zone-worker
+    restart: unless-stopped
     environment:
       NODE_ENV: development
       REDIS_URL: redis://redis:6379

@@ -464,7 +464,7 @@ export class LearningService {
       // This was a demand fulfillment — the user came back after we said "I don't know"
       if (outcome === 'positive') {
         const timeStr = this.formatTimeToLearn(timeToLearn);
-        return `ممنون! یادداشت کردم که ${personName} برای ${skillLabel} خوبه. ${timeStr}داونه یاد گرفتم. دفعه بعد از اول می‌شناسم.`;
+        return `ممنون! یادداشت کردم که ${personName} برای ${skillLabel} خوبه. ${timeStr}یاد گرفتم. دفعه بعد از اول می‌شناسم.`;
       } else if (outcome === 'negative') {
         return `متأسفانه تجربه خوبی نبوده. یادداشت کردم. این اطلاعات هم برای محله مفیده.`;
       } else {

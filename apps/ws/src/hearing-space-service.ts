@@ -190,6 +190,15 @@ export class HearingSpaceService {
 
     space.memberCount++;
 
+    // Persist updated memberCount to Redis so other processes see it
+    const existingData = await this.redis.get(`space:${spaceId}`);
+    if (existingData) {
+      const spaceData = JSON.parse(existingData);
+      spaceData.memberCount = space.memberCount;
+      // Preserve the original TTL if any
+      await this.redis.set(`space:${spaceId}`, JSON.stringify(spaceData));
+    }
+
     const presence = await this.redis.getPresence(personId);
     const currentSpaces = presence?.spaces || [];
     if (!currentSpaces.includes(spaceId)) {
@@ -233,6 +242,14 @@ export class HearingSpaceService {
     await this.redis.del(`member:${spaceId}:${personId}`);
 
     space.memberCount = Math.max(0, space.memberCount - 1);
+
+    // Persist updated memberCount to Redis
+    const existingData = await this.redis.get(`space:${spaceId}`);
+    if (existingData) {
+      const spaceData = JSON.parse(existingData);
+      spaceData.memberCount = space.memberCount;
+      await this.redis.set(`space:${spaceId}`, JSON.stringify(spaceData));
+    }
 
     const presence = await this.redis.getPresence(personId);
     if (presence) {
