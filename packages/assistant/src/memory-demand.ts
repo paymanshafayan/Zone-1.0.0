@@ -204,15 +204,14 @@ export class MemoryDemandService {
     const demandIds = this.skillIndex.get(key) || [];
 
     const results: MemoryDemand[] = [];
+    const now = Date.now();
     for (const id of demandIds) {
       const demand = this.demands.get(id);
       if (demand && demand.status === 'open') {
-        // Check if expired
-        const age = Date.now() - demand.createdAt.getTime();
-        if (age > demand.ttl) {
-          demand.status = 'expired';
-          continue;
-        }
+        // Check if expired — but don't mutate during a read operation.
+        // Expired demands are cleaned up lazily by getStats() or explicitly.
+        const age = now - demand.createdAt.getTime();
+        if (age > demand.ttl) continue;
         results.push(demand);
       }
     }

@@ -1075,7 +1075,7 @@ async function main() {
       const result = await learningService.learnFromUser(params);
 
       // Emit learning events
-      eventBus.emit('memory.recorded', {
+      await eventBus.emit('memory.recorded', {
         memoryId: result.memory.id,
         personId: body.personId,
         skill: body.skill,
@@ -1086,7 +1086,7 @@ async function main() {
       });
 
       if (result.fulfilledDemand) {
-        eventBus.emit('memory.demand.fulfilled', {
+        await eventBus.emit('memory.demand.fulfilled', {
           demandId: result.fulfilledDemand.id,
           memoryId: result.memory.id,
           skill: body.skill,
@@ -1149,7 +1149,7 @@ async function main() {
     try {
       const result = await learningService.learnFromUser(params);
 
-      eventBus.emit('memory.recorded', {
+      await eventBus.emit('memory.recorded', {
         memoryId: result.memory.id,
         personId: body.personId,
         skill: body.skill,
@@ -1347,14 +1347,14 @@ async function main() {
       const result = await subscriptionService.registerProfessional(params);
 
       // Emit events
-      eventBus.emit('license.submitted', {
+      await eventBus.emit('license.submitted', {
         licenseId: result.license.id,
         personId: params.personId,
         profession: result.license.profession,
         licenseNumber: result.license.licenseNumber,
       });
 
-      eventBus.emit('professional.registered', {
+      await eventBus.emit('professional.registered', {
         personId: params.personId,
         zoneId: params.zoneId,
         profession: result.license.profession,
@@ -1428,7 +1428,7 @@ async function main() {
       }
 
       // Emit events
-      eventBus.emit('subscription.activated', {
+      await eventBus.emit('subscription.activated', {
         subscriptionId: subscription.id,
         personId: subscription.personId,
         planId: subscription.planId,
@@ -1488,13 +1488,13 @@ async function main() {
 
       // Emit events
       if (body.approved) {
-        eventBus.emit('license.verified', {
+        await eventBus.emit('license.verified', {
           licenseId: license.id,
           personId: license.personId,
           verifiedBy: body.verifiedBy,
         });
       } else {
-        eventBus.emit('license.rejected', {
+        await eventBus.emit('license.rejected', {
           licenseId: license.id,
           personId: license.personId,
           rejectionReason: body.rejectionReason || '',
@@ -1587,7 +1587,7 @@ async function main() {
         return reply.status(404).send({ error: 'Subscription not found' });
       }
 
-      eventBus.emit('subscription.activated', {
+      await eventBus.emit('subscription.activated', {
         subscriptionId: subscription.id,
         personId: subscription.personId,
         planId: subscription.planId,
@@ -1622,7 +1622,7 @@ async function main() {
 
     const subscription = subscriptionService.get(subscriptionId);
 
-    eventBus.emit('subscription.cancelled', {
+    await eventBus.emit('subscription.cancelled', {
       subscriptionId,
       personId: subscription?.personId || '',
     });
@@ -1643,7 +1643,7 @@ async function main() {
     for (const id of expiredIds) {
       const subscription = subscriptionService.get(id);
       if (subscription) {
-        eventBus.emit('subscription.expired', {
+        await eventBus.emit('subscription.expired', {
           subscriptionId: id,
           personId: subscription.personId,
         });

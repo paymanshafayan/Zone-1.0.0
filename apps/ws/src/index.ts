@@ -463,18 +463,22 @@ async function main() {
 
   setInterval(async () => {
     for (const [id, user] of connections) {
-      // Check idle timeout
-      const idleTime = Date.now() - user.lastActivity.getTime();
-      if (idleTime > IDLE_TIMEOUT) {
-        logger.info('ws:idle_timeout', { connectionId: id, personId: user.personId });
-        user.ws.close();
-        continue;
-      }
+      try {
+        // Check idle timeout
+        const idleTime = Date.now() - user.lastActivity.getTime();
+        if (idleTime > IDLE_TIMEOUT) {
+          logger.info('ws:idle_timeout', { connectionId: id, personId: user.personId });
+          user.ws.close();
+          continue;
+        }
 
-      // Refresh presence
-      if (user.personId && user.zoneId) {
-        const spaces = user.currentSpaceId ? [user.currentSpaceId] : [];
-        await redis.setPresence(user.personId, user.zoneId, spaces);
+        // Refresh presence
+        if (user.personId && user.zoneId) {
+          const spaces = user.currentSpaceId ? [user.currentSpaceId] : [];
+          await redis.setPresence(user.personId, user.zoneId, spaces);
+        }
+      } catch (err) {
+        logger.warn('ws:presence_heartbeat:error', { connectionId: id, error: (err as Error).message });
       }
     }
   }, PRESENCE_INTERVAL);
