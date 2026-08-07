@@ -116,8 +116,10 @@
 - [x] جاب «Build Backend» در workflow (main.yml: corepack/pnpm install --frozen-lockfile + pnpm build + pnpm type-check؛ paths به backend extend شد)
 - [x] گزارش نهایی
 
-### وضعیت پوش
-- کامیت محلی انجام شد؛ پوش تلاش شد — دقت: توکن سندباکس ممکن است workflow را ریجکت کند (در آن صورت محتوای workflow به کاربر تحویل داده می‌شود).
+### وضعیت پوش و گیت (۲۰۲۶-۰۸-۰۷ — نهایی)
+- **پوش شد:** `d9cfcbf` (backend fixes، ۱۱ فایل +۱۰۰۲/−۲۱۰) روی `arena/019fdc95-zone-1-0-0` ✅ → CI روی PR #10 تریگر می‌شود.
+- **جاب Build Backend هم‌اکنون به‌صورت «تغییر لوکال بدون کامیت» در `.github/workflows/main.yml` موجود است** (مثل هر بار دیگر: توکن GitHub App اجازه‌ی ویرایش workflow را ندارد → remote rejected «without workflows permission»). محتوای آماده‌ی تغییر workflow در چت به کاربر تحویل داده شد تا دستی اعمال کند. خاطی اعتیاد: git status فایل workflow را «M» نشان می‌دهد — عمدی است؛ دور نینداز!
+- توکن GitHub سندباکس خودش اوکی بود (هشدار اولیه‌ی 401 لحظه‌ای/تازه‌سازی توکن بود).
 
 ## نکات فنی جمع‌آوری‌شده در راه (برای ادامه‌ی کار در چت جدید)
 
