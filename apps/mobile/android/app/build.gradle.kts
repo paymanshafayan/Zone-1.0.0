@@ -7,14 +7,12 @@ plugins {
 
 android {
     namespace = "com.zone.zoneapp"
-    // Pinned to the API level provisioned in CI (ANDROID_API_LEVEL=34) instead
-    // of flutter.compileSdkVersion/targetSdkVersion — resolution of those
-    // against the GitHub runner image was part of the release-build failure.
-    compileSdk = 34
-    // Pinned to an NDK that is preinstalled on the GitHub runner images.
-    // flutter.ndkVersion resolves to a patch release that is not present
-    // on the runners, which fails release builds at stripReleaseDebugSymbols.
-    ndkVersion = "27.2.12479018"
+    compileSdk = flutter.compileSdkVersion
+    // Highest NDK required by this project's plugins. AGP resolves NDK
+    // conflicts by using the highest requested version (NDK releases are
+    // backward compatible), and this exact release is preinstalled on the
+    // GitHub runner images.
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -24,7 +22,7 @@ android {
     defaultConfig {
         applicationId = "com.zone.zoneapp"
         minSdk = 24 // Android 7.0+ — required for ONNX Runtime + WebSocket
-        targetSdk = 34
+        targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
@@ -40,10 +38,8 @@ android {
             resValue("string", "app_name", "زون (Debug)")
         }
         release {
-            // DIAGNOSTIC: minification temporarily disabled to isolate a
-            // persistent CI release-build failure (re-enable once fixed).
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
