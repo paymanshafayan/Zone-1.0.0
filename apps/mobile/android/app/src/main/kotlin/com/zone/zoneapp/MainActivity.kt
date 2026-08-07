@@ -1,4 +1,4 @@
-package com.zone.zone_app
+package com.zone.zoneapp
 
 import io.flutter.embedding.android.FlutterActivity
 
