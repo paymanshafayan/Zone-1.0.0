@@ -7,8 +7,14 @@ plugins {
 
 android {
     namespace = "com.zone.zoneapp"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Pinned to the API level provisioned in CI (ANDROID_API_LEVEL=34) instead
+    // of flutter.compileSdkVersion/targetSdkVersion — resolution of those
+    // against the GitHub runner image was part of the release-build failure.
+    compileSdk = 34
+    // Pinned to an NDK that is preinstalled on the GitHub runner images.
+    // flutter.ndkVersion resolves to a patch release that is not present
+    // on the runners, which fails release builds at stripReleaseDebugSymbols.
+    ndkVersion = "27.2.12479018"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -18,7 +24,7 @@ android {
     defaultConfig {
         applicationId = "com.zone.zoneapp"
         minSdk = 24 // Android 7.0+ — required for ONNX Runtime + WebSocket
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 34
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
