@@ -54,6 +54,10 @@ dependencies:
   photo_view: ^0.14.0
   image_picker: ^1.0.7
   video_player: ^2.8.2
+  # Silences "Expected to find fonts for (packages/cupertino_icons/...)" —
+  # the font manifest references CupertinoIcons (via IconData usage) but
+  # the font asset was missing.
+  cupertino_icons: ^1.0.8
 
   # ─── Permissions ───
   permission_handler: ^11.4.0
