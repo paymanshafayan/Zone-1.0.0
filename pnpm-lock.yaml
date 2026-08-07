@@ -51,6 +51,9 @@ importers:
       '@zone/voice':
         specifier: workspace:^
         version: link:../../packages/voice
+      bullmq:
+        specifier: ^5.0.0
+        version: 5.81.3
       fastify:
         specifier: ^5.3.0
         version: 5.11.0

@@ -70,12 +70,12 @@ async function main() {
 
   // ─── Create Queue ───
 
-  const waveQueue = new Queue<WaveJob>('zone:waves', { connection });
+  const waveQueue = new Queue<WaveJob>('zone-waves', { connection });
 
   // ─── Wave Processor ───
 
   const waveWorker = new Worker<WaveJob>(
-    'zone:waves',
+    'zone-waves',
     async (job: Job<WaveJob>) => {
       const {
         requestId,

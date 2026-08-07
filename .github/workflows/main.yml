@@ -1,15 +1,35 @@
-name: Flutter Build APK & IPA
+name: Flutter Build APK & IPA + Backend Build
 
 on:
   push:
     branches: [main]
     paths:
       - 'apps/mobile/**'
+      - 'apps/api/**'
+      - 'apps/ws/**'
+      - 'apps/worker/**'
+      - 'packages/**'
+      - 'plugins/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'turbo.json'
       - '.github/workflows/main.yml'
   pull_request:
     branches: [main]
     paths:
       - 'apps/mobile/**'
+      - 'apps/api/**'
+      - 'apps/ws/**'
+      - 'apps/worker/**'
+      - 'packages/**'
+      - 'plugins/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'turbo.json'
       - '.github/workflows/main.yml'
   workflow_dispatch:
 
@@ -25,6 +45,33 @@ env:
   ANDROID_BUILD_TOOLS: '34.0.0'
 
 jobs:
+  build-backend:
+    name: Build Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all backend packages (turbo)
+        run: pnpm build
+
+      - name: Type-check all backend packages
+        run: pnpm type-check
+
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest

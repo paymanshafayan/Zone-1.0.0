@@ -277,7 +277,12 @@ export class ResponseModeEngine {
           skill,
           zoneId,
           radius: 2500,
-          minConfidence: DECISION_RULES.KNOW_MIN_CONFIDENCE,
+          // The fetch threshold is given a 0.1 margin below the decision
+          // threshold: MemoryService compares CREDIBILITY (which decays
+          // strictly below confidence over time) against this threshold,
+          // so a memory sitting exactly at the decision boundary would
+          // otherwise silently disappear between decide and fetch.
+          minConfidence: DECISION_RULES.KNOW_MIN_CONFIDENCE - 0.1,
           maxResults: 5,
         },
       };

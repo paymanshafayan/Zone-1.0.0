@@ -20,6 +20,7 @@ class VisualFeedState {
   final int currentPage;
   final String? errorMessage;
   final int? postCount; // For voice announcements
+  final Set<String> likedPostIds; // Optimistic like feedback
 
   const VisualFeedState({
     this.posts = const [],
@@ -28,6 +29,7 @@ class VisualFeedState {
     this.currentPage = 0,
     this.errorMessage,
     this.postCount,
+    this.likedPostIds = const {},
   });
 
   VisualFeedState copyWith({
@@ -37,6 +39,7 @@ class VisualFeedState {
     int? currentPage,
     String? errorMessage,
     int? postCount,
+    Set<String>? likedPostIds,
   }) {
     return VisualFeedState(
       posts: posts ?? this.posts,
@@ -45,6 +48,7 @@ class VisualFeedState {
       currentPage: currentPage ?? this.currentPage,
       errorMessage: errorMessage,
       postCount: postCount ?? this.postCount,
+      likedPostIds: likedPostIds ?? this.likedPostIds,
     );
   }
 }
@@ -112,8 +116,19 @@ class VisualFeedNotifier extends StateNotifier<VisualFeedState> {
     return 0;
   }
 
-  /// Like a post
+  /// Like a post — optimistic update, rolled back if the call fails.
   Future<void> likePost(String postId) async {
-    await _api.likePost(postId: postId);
+    if (state.likedPostIds.contains(postId)) {
+      return; // Already liked — backend counts each like once.
+    }
+    state = state.copyWith(
+      likedPostIds: {...state.likedPostIds, postId},
+    );
+    final response = await _api.likePost(postId: postId);
+    if (response.isError) {
+      state = state.copyWith(
+        likedPostIds: {...state.likedPostIds}..remove(postId),
+      );
+    }
   }
 }

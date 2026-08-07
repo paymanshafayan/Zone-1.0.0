@@ -8,7 +8,11 @@ plugins {
 android {
     namespace = "com.zone.zoneapp"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Highest NDK required by this project's plugins. AGP resolves NDK
+    // conflicts by using the highest requested version (NDK releases are
+    // backward compatible), and this exact release is preinstalled on the
+    // GitHub runner images.
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

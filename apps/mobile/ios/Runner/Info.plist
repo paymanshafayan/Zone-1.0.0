@@ -26,6 +26,14 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>زون برای گرفتن عکس مجوز یا رسانه‌ی پست حرفه‌ای به دوربین نیاز دارد.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>زون برای شنیدن درخواست‌های صوتی شما به میکروفون نیاز دارد.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>زون برای انتخاب تصویر مجوز یا رسانه‌ی پست حرفه‌ای از گالری به کتابخانه‌ی عکس نیاز دارد.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>زون برای تبدیل صدای شما به متن از تشخیص گفتار روی خود دستگاه استفاده می‌کند.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

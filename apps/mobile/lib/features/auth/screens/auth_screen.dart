@@ -117,15 +117,28 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   }
 
   void _handleLogin() {
+    final phone = _phoneController.text.trim();
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('اول شماره موبایلت رو بنویس 📱'),
+          backgroundColor: AppTheme.accentEmergency,
+        ),
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
 
-    // For MVP: skip OTP, just login
+    // For MVP: skip OTP, just login. A first-time login always goes
+    // through onboarding, so mark the account as a new user.
     Future.delayed(const Duration(seconds: 1), () {
       if (mounted) {
         ref.read(authProvider.notifier).login(
-          'user_${DateTime.now().millisecondsSinceEpoch}',
+          'user_$phone',
           'کاربر',
           'default_zone',
+          isNewUser: true,
         );
       }
     });

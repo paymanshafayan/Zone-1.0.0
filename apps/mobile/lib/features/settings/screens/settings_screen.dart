@@ -10,6 +10,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../shared/services/navigation_service.dart';
 import '../../../shared/services/notification_service.dart';
+import '../providers/profile_provider.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -233,11 +234,14 @@ class SettingsScreen extends ConsumerWidget {
     String tagPattern,
     IconData icon,
   ) {
+    final isSubscribed =
+        ref.watch(profileProvider).subscribedTags.contains(tagPattern);
+
     return SwitchListTile(
-      value: true, // Default: subscribed
-      onChanged: (value) {
-        // In production: use profileProvider.toggleTagSubscription
-      },
+      value: isSubscribed,
+      onChanged: (value) => ref
+          .read(profileProvider.notifier)
+          .toggleTagSubscription(tagPattern),
       secondary: Icon(icon, color: AppTheme.primaryLight),
       title: Text(label),
       subtitle: Text(tagPattern, style: const TextStyle(fontFamily: 'monospace')),

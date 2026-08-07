@@ -45,6 +45,15 @@ export interface VoicePipelineConfig {
   tagVocabulary: string[];
   /** Whether to use the three-mode response engine */
   useResponseModes: boolean;
+  /**
+   * Shared service instances (e.g. the ones the API server uses).
+   * If not provided, the pipeline creates its own — which works for
+   * tests, but in a live server you MUST inject the shared instances
+   * or the pipeline will always operate on an empty knowledge base.
+   */
+  memoryService?: MemoryService;
+  postService?: PostService;
+  responseModeEngine?: ResponseModeEngine;
 }
 
 export interface VoicePipelineResult {
@@ -113,15 +122,24 @@ export class VoicePipeline {
 
     // Initialize three-mode response engine (Phase 5)
     if (this.config.useResponseModes) {
-      this.memoryService = new MemoryService();
-      this.postService = new PostService();
+      // Prefer injected shared instances; fall back to fresh ones
+      // (useful for tests, but empty in production).
+      this.memoryService = config.memoryService ?? new MemoryService();
+      this.postService = config.postService ?? new PostService();
+      this.responseModeEngine = config.responseModeEngine ?? null;
 
-      const toolExecutor = new ToolExecutor({
-        memoryService: this.memoryService,
-        postService: this.postService,
-      });
+      if (!this.responseModeEngine) {
+        const toolExecutor = new ToolExecutor({
+          memoryService: this.memoryService,
+          postService: this.postService,
+        });
 
-      this.responseModeEngine = new ResponseModeEngine(toolExecutor);
+        this.responseModeEngine = new ResponseModeEngine(
+          toolExecutor,
+          this.memoryService,
+          this.postService
+        );
+      }
     }
   }
 
@@ -321,6 +339,36 @@ export class VoicePipeline {
     const _zoneId = zoneId || 'zone_default';
     const _requesterId = requesterId || 'user_default';
 
+    // KNOW-shares: the user is volunteering information ("من بلدم",
+    // "آقای رضایی خوبه"). The mode engine would misclassify this as a
+    // request and open a wave. Instead, record what we can and answer
+    // honestly — never claim we stored something we didn't.
+    if (edgeResult.intent === 'know') {
+      const knowResponse = await this.handleKnowShare(text, edgeResult, _zoneId, _requesterId);
+      responseText = knowResponse;
+      usedFastPath = true;
+      usedModeEngine = false;
+      latencyBreakdown.cloud = Date.now() - cloudStart;
+
+      cloudResult = {
+        response: responseText,
+        mode: 'know',
+        professionalPosts: 0,
+      };
+
+      return {
+        rawText: text,
+        edgeResult,
+        cloudResult,
+        modeResult,
+        responseText,
+        usedFastPath,
+        usedModeEngine,
+        totalLatency: Date.now() - startTime,
+        latencyBreakdown,
+      };
+    }
+
     if (this.config.useResponseModes && this.responseModeEngine) {
       // Use the three-mode response engine
       try {
@@ -449,7 +497,7 @@ export class VoicePipeline {
   private generateFastResponse(rawText: string, edgeResult: EdgeProcessingResult): string {
     switch (edgeResult.intent) {
       case 'know':
-        return 'ممنون! یادداشت کردم.';
+        return 'ممنون که گفتی! اینو در نظر می‌گیرم.';
       case 'ask':
         return this.edgeProcessor.getBridgingResponse('ask');
       case 'unknown':
@@ -470,6 +518,54 @@ export class VoicePipeline {
   }
 
   // ─── Helpers ───
+
+  /**
+   * Handle the case where the user is SHARING knowledge rather than
+   * asking a question (edge intent: 'know').
+   *
+   * If we can extract a skill, we record a self-reported memory so the
+   * knowledge base actually grows (Principle 4: knowledge grows, it is
+   * not planted). The response is truthful about what was recorded.
+   */
+  private async handleKnowShare(
+    text: string,
+    edgeResult: EdgeProcessingResult,
+    zoneId: string,
+    requesterId: string
+  ): Promise<string> {
+    const serviceTag = edgeResult.tags.find((t) => t.startsWith('services/'));
+    const socialTag = edgeResult.tags.find((t) => t.startsWith('social/'));
+    const tag = serviceTag || socialTag;
+    const skill = tag ? tag.split('/')[1] : '';
+
+    if (skill && this.memoryService && requesterId) {
+      try {
+        await this.memoryService.record({
+          zoneId,
+          personId: requesterId,
+          personName: requesterId,
+          skill,
+          description: text,
+          outcome: 'positive',
+          sourcePersonId: requesterId,
+          sourcePersonName: requesterId,
+        });
+
+        this.logger.info('pipeline:know:recorded', {
+          requesterId,
+          skill,
+          zoneId,
+        });
+
+        return 'ممنون! یادداشت کردم. دفعه بعد که کسی لازم داشت بهت خبر می‌دم.';
+      } catch (err) {
+        this.logger.warn('pipeline:know:record_failed', { error: err });
+      }
+    }
+
+    // Nothing structured to record — acknowledge honestly.
+    return 'ممنون که گفتی! هنوز نمی‌تونم اینو سیستماتیک ثبت کنم، ولی توی گفتگو بهش توجه می‌کنم.';
+  }
 
   private async withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     return Promise.race([

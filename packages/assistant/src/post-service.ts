@@ -42,7 +42,8 @@ export interface ProfessionalPost {
 export interface CreatePostParams {
   zoneId: string;
   providerId: string;
-  providerName: string;
+  /** Display name of the provider (defaults to providerId) */
+  providerName?: string;
   media: PostMedia[];
   description: string;
   tags: string[];
@@ -91,7 +92,7 @@ export class PostService {
     const {
       zoneId,
       providerId,
-      providerName,
+      providerName = providerId,
       media,
       description,
       tags,
@@ -166,13 +167,17 @@ export class PostService {
     // Get all post IDs for this zone
     const zoneIndex = this.index.get(zoneId);
     if (!zoneIndex) {
-      return { posts: [], total: 0, page, pageSize, hasMore: false };
+      if (tags && tags.length > 0) {
+        return { posts: [], total: 0, page, pageSize, hasMore: false };
+      }
+      // No tags requested: unindexed (untagged) posts may still exist —
+      // fall through to the direct store scan below.
     }
 
     // Collect matching post IDs
     let matchingIds: Set<string>;
 
-    if (tags && tags.length > 0) {
+    if (tags && tags.length > 0 && zoneIndex) {
       // Find posts that match ANY of the requested tags
       matchingIds = new Set();
       for (const tag of tags) {
@@ -182,11 +187,12 @@ export class PostService {
         }
       }
     } else {
-      // All posts in the zone
+      // All posts in the zone — iterate the store directly so that
+      // posts with no valid tags (never indexed) are not invisible.
       matchingIds = new Set();
-      for (const ids of zoneIndex.values()) {
-        for (const id of ids) {
-          matchingIds.add(id);
+      for (const post of this.posts.values()) {
+        if (post.zoneId === zoneId) {
+          matchingIds.add(post.id);
         }
       }
     }
@@ -330,11 +336,11 @@ export class PostService {
    */
   async getPostCount(zoneId: string, tags?: string[]): Promise<number> {
     const zoneIndex = this.index.get(zoneId);
-    if (!zoneIndex) return 0;
+    if (!zoneIndex && tags && tags.length > 0) return 0;
 
     let matchingIds: Set<string>;
 
-    if (tags && tags.length > 0) {
+    if (tags && tags.length > 0 && zoneIndex) {
       matchingIds = new Set();
       for (const tag of tags) {
         const ids = zoneIndex.get(tag) || [];
@@ -343,10 +349,11 @@ export class PostService {
         }
       }
     } else {
+      // No tag filter: scan the store directly so untagged posts count too.
       matchingIds = new Set();
-      for (const ids of zoneIndex.values()) {
-        for (const id of ids) {
-          matchingIds.add(id);
+      for (const post of this.posts.values()) {
+        if (post.zoneId === zoneId) {
+          matchingIds.add(post.id);
         }
       }
     }
