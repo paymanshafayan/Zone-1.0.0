@@ -11,10 +11,12 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import { Queue } from 'bullmq';
 import {
   EventBus,
   PluginRegistry,
   Logger,
+  SpaceType,
 } from '@zone/core';
 import { ZoneRedis } from '@zone/redis';
 import { FullTagService as TagService } from '@zone/tags';
@@ -81,6 +83,146 @@ class SpaceManager {
     }
     return members;
   }
+
+  async listSpaces(zoneId?: string): Promise<SpaceInfo[]> {
+    const keys = await this.redis.getKeys('space:*');
+    const spaces: SpaceInfo[] = [];
+    for (const key of keys) {
+      const data = await this.redis.get(key);
+      if (!data) continue;
+      try {
+        const space = JSON.parse(data) as SpaceInfo;
+        if (!zoneId || space.zoneId === zoneId) {
+          spaces.push(space);
+        }
+      } catch {
+        // skip malformed entries
+      }
+    }
+    return spaces;
+  }
+}
+
+// ─── Wave Job Queue (shared with apps/worker) ───
+
+interface WaveJob {
+  requestId: string;
+  zoneId: string;
+  tags: string[];
+  radius: number;
+  waveLevel: 1 | 2 | 3;
+  requesterId: string;
+  description: string;
+  responseCount: number;
+  centerLatitude?: number;
+  centerLongitude?: number;
+  urgency: 'normal' | 'urgent' | 'emergency';
+}
+
+function redisConnectionEnv(): { host: string; port: number } {
+  // Prefer explicit REDIS_HOST/REDIS_PORT; fall back to parsing REDIS_URL.
+  if (process.env.REDIS_HOST) {
+    return {
+      host: process.env.REDIS_HOST,
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    };
+  }
+  try {
+    const url = new URL(process.env.REDIS_URL || 'redis://localhost:6379');
+    return {
+      host: url.hostname || 'localhost',
+      port: parseInt(url.port || '6379', 10),
+    };
+  } catch {
+    return { host: 'localhost', port: 6379 };
+  }
+}
+
+/**
+ * Real waveService adapter for the ToolExecutor.
+ *
+ * Previously `waveService` was null, so open_wave produced a fake
+ * `wave_*` ID: no hearing space ever appeared in Redis and the worker's
+ * BullMQ `zone-waves` queue was never fed.
+ *
+ * This adapter:
+ * 1. Creates a REAL dynamic hearing space in Redis using the exact
+ *    `space:{id}` layout the WS server understands (so clients can join).
+ * 2. Enqueues the tiered broadcast wave for the worker to process.
+ */
+class RedisWaveServiceAdapter {
+  private redis: ZoneRedis;
+  private waveQueue: Queue<WaveJob> | null;
+  private logger: Logger;
+
+  constructor(redis: ZoneRedis, waveQueue: Queue<WaveJob> | null) {
+    this.redis = redis;
+    this.waveQueue = waveQueue;
+    this.logger = new Logger({ context: { service: 'wave-adapter' } });
+  }
+
+  async createDynamicSpace(input: {
+    zoneId: string;
+    tags: string[];
+    radius?: number;
+    /** Milliseconds (ToolExecutor's getReverberationTTL returns ms) */
+    reverberationTtl?: number;
+    requesterId: string;
+    description?: string;
+  }): Promise<SpaceInfo> {
+    const id = `dyn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const ttlMs = input.reverberationTtl || 2 * 60 * 60 * 1000; // 2h default
+    const ttlSeconds = Math.max(60, Math.floor(ttlMs / 1000));
+
+    const space: SpaceInfo = {
+      id,
+      zoneId: input.zoneId,
+      type: SpaceType.DYNAMIC,
+      tags: input.tags,
+      radius: input.radius ?? 2500,
+      reverberationTtl: ttlMs,
+      memberCount: 0,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+    };
+
+    // Same layout as apps/ws HearingSpaceService.createDynamicSpace
+    await this.redis.set(`space:${id}`, JSON.stringify(space), ttlSeconds);
+
+    // Enqueue the tiered broadcast wave (worker picks it up)
+    if (this.waveQueue) {
+      try {
+        const urgency: WaveJob['urgency'] =
+          input.tags.includes('urgency/emergency')
+            ? 'emergency'
+            : input.tags.includes('urgency/urgent')
+              ? 'urgent'
+              : 'normal';
+
+        await this.waveQueue.add('wave', {
+          requestId: id,
+          zoneId: input.zoneId,
+          tags: input.tags,
+          radius: space.radius ?? 2500,
+          waveLevel: 1,
+          requesterId: input.requesterId,
+          description: input.description || input.tags.join(', '),
+          responseCount: 0,
+          urgency,
+        });
+      } catch (err) {
+        this.logger.warn('wave:enqueue:failed', { error: err });
+      }
+    }
+
+    this.logger.info('wave:space:created', {
+      spaceId: id,
+      zoneId: input.zoneId,
+      ttlSeconds,
+    });
+
+    return space;
+  }
 }
 
 // ─── Bootstrap ───
@@ -104,6 +246,14 @@ async function main() {
   const tagService = new TagService();
   const spaceManager = new SpaceManager(redis);
 
+  // Wave queue shared with apps/worker (BullMQ 'zone-waves').
+  // If Redis is unavailable this is created lazily-safe: BullMQ only
+  // connects on first use, and enqueue failures are caught.
+  const waveQueue = new Queue<WaveJob>('zone-waves', {
+    connection: redisConnectionEnv(),
+  });
+  const waveAdapter = new RedisWaveServiceAdapter(redis, waveQueue);
+
   // ─── Initialize Phase 5 Services ───
 
   const memoryService = new MemoryService();
@@ -121,7 +271,7 @@ async function main() {
   const toolExecutor = new ToolExecutor({
     memoryService,
     postService,
-    waveService: null, // Will be connected to WS server
+    waveService: waveAdapter, // Real spaces + wave queue
     learningService,
   });
 
@@ -138,6 +288,11 @@ async function main() {
     useBridging: true,
     useFastPath: true,
     useResponseModes: true,
+    // Share the same service instances as the rest of the API so the
+    // voice pipeline sees the SAME knowledge base (memories/posts).
+    memoryService,
+    postService,
+    responseModeEngine,
   });
 
   // ─── Initialize Outer Core SDK ───
@@ -169,7 +324,7 @@ async function main() {
   // ─── Health Check ─────────────────────────
   // ═══════════════════════════════════════════
 
-  app.get('/health', async () => {
+  const healthHandler = async () => {
     const redisHealthy = await redis.healthCheck();
     return {
       status: redisHealthy ? 'ok' : 'degraded',
@@ -178,7 +333,11 @@ async function main() {
         redis: redisHealthy ? 'ok' : 'down',
       },
     };
-  });
+  };
+
+  app.get('/health', healthHandler);
+  // The mobile client calls /api/health
+  app.get('/api/health', healthHandler);
 
   // ═══════════════════════════════════════════
   // ─── Tag Routes (Phase 4 — Enhanced) ──────
@@ -199,9 +358,18 @@ async function main() {
     return { paths: tagService.getAllPaths() };
   });
 
-  app.get('/api/tags/branch', async (request) => {
+  app.get('/api/tags/branch', async (request, reply) => {
     const { branch } = request.query as { branch: string };
-    if (!branch) return { error: 'branch is required' };
+    if (!branch) {
+      return reply.status(400).send({ error: 'branch is required' });
+    }
+    const tags = tagService.getTagsByBranch(branch);
+    return { tags };
+  });
+
+  // Path-style variant (the mobile client uses /api/tags/branch/:branch)
+  app.get('/api/tags/branch/:branch', async (request) => {
+    const { branch } = request.params as { branch: string };
     const tags = tagService.getTagsByBranch(branch);
     return { tags };
   });
@@ -210,10 +378,14 @@ async function main() {
     return tagService.getStats();
   });
 
-  app.post('/api/tags/demand', async (request) => {
-    const body = request.body as { concept: string };
-    if (!body.concept) return { error: 'concept is required' };
-    const result = await tagService.demand(body.concept);
+  app.post('/api/tags/demand', async (request, reply) => {
+    // Accept both `concept` (canonical) and `tagPath` (mobile client)
+    const body = request.body as { concept?: string; tagPath?: string };
+    const concept = body.concept || body.tagPath;
+    if (!concept) {
+      return reply.status(400).send({ error: 'concept is required' });
+    }
+    const result = await tagService.demand(concept);
     return result;
   });
 
@@ -225,7 +397,7 @@ async function main() {
     return { demands: tagService.getQueuedDemands() };
   });
 
-  app.post('/api/tags/demands/approve', async (request) => {
+  app.post('/api/tags/demands/approve', async (request, reply) => {
     const body = request.body as {
       concept: string;
       path: string;
@@ -233,22 +405,28 @@ async function main() {
       labelEn: string;
     };
     if (!body.concept || !body.path || !body.label || !body.labelEn) {
-      return { error: 'concept, path, label, and labelEn are required' };
+      return reply.status(400).send({
+        error: 'concept, path, label, and labelEn are required',
+      });
     }
     const result = tagService.approveDemand(body.concept, body.path, body.label, body.labelEn);
     return { approved: result };
   });
 
-  app.post('/api/tags/demands/reject', async (request) => {
+  app.post('/api/tags/demands/reject', async (request, reply) => {
     const body = request.body as { concept: string };
-    if (!body.concept) return { error: 'concept is required' };
+    if (!body.concept) {
+      return reply.status(400).send({ error: 'concept is required' });
+    }
     const result = tagService.rejectDemand(body.concept);
     return { rejected: result };
   });
 
-  app.post('/api/tags/alias', async (request) => {
+  app.post('/api/tags/alias', async (request, reply) => {
     const body = request.body as { alias: string; tagPath: string };
-    if (!body.alias || !body.tagPath) return { error: 'alias and tagPath are required' };
+    if (!body.alias || !body.tagPath) {
+      return reply.status(400).send({ error: 'alias and tagPath are required' });
+    }
     const result = tagService.addAlias(body.alias, body.tagPath);
     return { added: result };
   });
@@ -276,15 +454,21 @@ async function main() {
   // ─── Hearing Space Routes (Phase 2) ───────
   // ═══════════════════════════════════════════
 
-  app.get('/api/spaces/:spaceId', async (request) => {
+  app.get('/api/spaces/:spaceId', async (request, reply) => {
     const { spaceId } = request.params as { spaceId: string };
-    const space = await spaceManager.getSpace(spaceId);
 
-    if (!space) {
-      return { error: 'Space not found' };
+    let space: SpaceInfo | null;
+    let members: string[];
+    try {
+      space = await spaceManager.getSpace(spaceId);
+      members = space ? await spaceManager.getSpaceMembers(spaceId) : [];
+    } catch {
+      return reply.status(503).send({ error: 'Space store unavailable' });
     }
 
-    const members = await spaceManager.getSpaceMembers(spaceId);
+    if (!space) {
+      return reply.status(404).send({ error: 'Space not found' });
+    }
 
     return {
       id: space.id,
@@ -301,16 +485,41 @@ async function main() {
     };
   });
 
-  app.get('/api/spaces/:spaceId/members', async (request) => {
+  app.get('/api/spaces/:spaceId/members', async (request, reply) => {
     const { spaceId } = request.params as { spaceId: string };
-    const members = await spaceManager.getSpaceMembers(spaceId);
-    return { members };
+    try {
+      const members = await spaceManager.getSpaceMembers(spaceId);
+      return { members };
+    } catch {
+      return reply.status(503).send({ error: 'Space store unavailable' });
+    }
   });
 
-  app.get('/api/spaces', async (request) => {
-    const { zoneId } = request.query as { zoneId: string };
-    if (!zoneId) return { error: 'zoneId is required' };
-    return { spaces: [], note: 'Use WebSocket for real-time space management' };
+  app.get('/api/spaces', async (request, reply) => {
+    const { zoneId } = request.query as { zoneId?: string };
+    if (!zoneId) {
+      return reply.status(400).send({ error: 'zoneId is required' });
+    }
+    let spaces: SpaceInfo[];
+    try {
+      spaces = await spaceManager.listSpaces(zoneId);
+    } catch {
+      return reply.status(503).send({ error: 'Space store unavailable' });
+    }
+    return {
+      spaces: spaces.map((s) => ({
+        id: s.id,
+        type: s.type,
+        zoneId: s.zoneId,
+        name: s.name,
+        tags: s.tags,
+        radius: s.radius,
+        memberCount: s.memberCount,
+        createdAt: s.createdAt,
+        expiresAt: s.expiresAt,
+      })),
+      note: 'Real-time updates come through WebSocket',
+    };
   });
 
   // ─── Presence Routes ───
@@ -338,13 +547,28 @@ async function main() {
   // ─── Voice Pipeline Routes (Phase 3) ──────
   // ═══════════════════════════════════════════
 
-  app.post('/api/voice/process', async (request) => {
-    const body = request.body as { text: string; zoneId?: string; requesterId?: string };
-    if (!body.text) return { error: 'text is required' };
+  app.post('/api/voice/process', async (request, reply) => {
+    // Accept both `requesterId` (canonical) and `personId` (mobile client)
+    const body = request.body as {
+      text: string;
+      zoneId?: string;
+      requesterId?: string;
+      personId?: string;
+    };
+    if (!body.text) {
+      return reply.status(400).send({ error: 'text is required' });
+    }
+
+    const requesterId = body.requesterId || body.personId;
 
     try {
-      const result = await voicePipeline.processTextInput(body.text, body.zoneId, body.requesterId);
+      const result = await voicePipeline.processTextInput(body.text, body.zoneId, requesterId);
+      const mode = result.modeResult?.mode ?? result.cloudResult?.mode;
       return {
+        // Mobile-client contract: the reply text and uppercase mode
+        response: result.responseText,
+        mode: mode ? mode.toUpperCase() : 'UNKNOWN',
+        // Full result (canonical contract)
         rawText: result.rawText,
         edgeResult: {
           tags: result.edgeResult.tags,
@@ -375,13 +599,15 @@ async function main() {
         latencyBreakdown: result.latencyBreakdown,
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(500).send({ error: err.message });
     }
   });
 
-  app.post('/api/voice/extract-tags', async (request) => {
+  app.post('/api/voice/extract-tags', async (request, reply) => {
     const body = request.body as { text: string };
-    if (!body.text) return { error: 'text is required' };
+    if (!body.text) {
+      return reply.status(400).send({ error: 'text is required' });
+    }
 
     const edgeProcessor = new EdgeProcessor(tagVocabulary);
     const tags = edgeProcessor.extractTags(body.text);
@@ -391,18 +617,24 @@ async function main() {
     return { tags, intent, numbers };
   });
 
-  app.post('/api/voice/readback', async (request) => {
+  app.post('/api/voice/readback', async (request, reply) => {
+    // Accept both `value` (canonical) and `amount` (mobile client)
     const body = request.body as {
-      value: number;
-      unit: string;
-      basis: string;
+      value?: number;
+      amount?: number;
+      rawSpeech?: string;
+      unit?: string;
+      basis?: string;
     };
-    if (!body.value) return { error: 'value is required' };
+    const value = body.value ?? body.amount;
+    if (value === undefined || value === null) {
+      return reply.status(400).send({ error: 'value is required' });
+    }
 
     const edgeProcessor = new EdgeProcessor(tagVocabulary);
     const readback = edgeProcessor.generateReadback({
-      raw: '',
-      value: body.value,
+      raw: body.rawSpeech || '',
+      value,
       unit: body.unit || 'toman',
       basis: body.basis || 'per_unit',
       isConfirmed: false,
@@ -411,24 +643,32 @@ async function main() {
     return { readback };
   });
 
-  app.post('/api/voice/confirm-number', async (request) => {
+  app.post('/api/voice/confirm-number', async (request, reply) => {
+    // Accept both `value` (canonical) and `amount` (mobile client)
     const body = request.body as {
-      value: number;
-      unit: string;
-      basis: string;
+      value?: number;
+      amount?: number;
+      numberId?: string;
+      unit?: string;
+      basis?: string;
       confirmed: boolean;
     };
-    if (!body.value) return { error: 'value is required' };
+    const value = body.value ?? body.amount;
+    if (value === undefined || value === null) {
+      return reply.status(400).send({ error: 'value is required' });
+    }
 
     if (!body.confirmed) {
-      return { error: 'Number not confirmed. Read-back confirmation is mandatory.' };
+      return reply.status(400).send({
+        error: 'Number not confirmed. Read-back confirmation is mandatory.',
+      });
     }
 
     return {
       confirmed: true,
-      value: body.value,
-      unit: body.unit,
-      basis: body.basis,
+      value,
+      unit: body.unit || 'toman',
+      basis: body.basis || 'per_unit',
       lockedAt: new Date().toISOString(),
     };
   });
@@ -441,30 +681,39 @@ async function main() {
    * Determine the response mode for a request
    * POST /api/response-mode/decide
    */
-  app.post('/api/response-mode/decide', async (request) => {
+  app.post('/api/response-mode/decide', async (request, reply) => {
+    // Mobile client sends { skill, zoneId, personId } — map it to the
+    // canonical { tags, intent, zoneId, requesterId } shape.
     const body = request.body as {
-      tags: string[];
-      intent: 'know' | 'ask' | 'unknown';
+      tags?: string[];
+      skill?: string;
+      intent?: 'know' | 'ask' | 'unknown';
       numbers?: any[];
-      confidence: number;
+      confidence?: number;
       zoneId: string;
-      requesterId: string;
+      requesterId?: string;
+      personId?: string;
     };
 
-    if (!body.tags || !body.zoneId || !body.requesterId) {
-      return { error: 'tags, zoneId, and requesterId are required' };
+    const tags = body.tags || (body.skill ? [`services/${body.skill}`] : []);
+    const requesterId = body.requesterId || body.personId;
+
+    if (tags.length === 0 || !body.zoneId || !requesterId) {
+      return reply.status(400).send({
+        error: 'tags (or skill), zoneId, and requesterId (or personId) are required',
+      });
     }
 
     try {
       const result = await responseModeEngine.decide(
         {
-          tags: body.tags,
-          intent: body.intent,
+          tags,
+          intent: body.intent || 'ask',
           numbers: body.numbers || [],
-          confidence: body.confidence,
+          confidence: body.confidence ?? 0.5,
         },
         body.zoneId,
-        body.requesterId
+        requesterId
       );
 
       return {
@@ -479,7 +728,7 @@ async function main() {
         professionalPostCount: result.professionalPostCount,
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(500).send({ error: err.message });
     }
   });
 
@@ -499,7 +748,7 @@ async function main() {
    * Search neighbourhood memories
    * GET /api/memories/search?skill=X&zoneId=Y
    */
-  app.get('/api/memories/search', async (request) => {
+  app.get('/api/memories/search', async (request, reply) => {
     const { skill, zoneId, minConfidence, maxResults } = request.query as {
       skill: string;
       zoneId: string;
@@ -507,7 +756,9 @@ async function main() {
       maxResults?: string;
     };
 
-    if (!skill || !zoneId) return { error: 'skill and zoneId are required' };
+    if (!skill || !zoneId) {
+      return reply.status(400).send({ error: 'skill and zoneId are required' });
+    }
 
     const results = await memoryService.search({
       skill,
@@ -523,14 +774,29 @@ async function main() {
    * Record a new memory
    * POST /api/memories
    */
-  app.post('/api/memories', async (request) => {
-    const body = request.body as RecordMemoryParams;
+  app.post('/api/memories', async (request, reply) => {
+    const body = request.body as Partial<RecordMemoryParams>;
 
-    if (!body.zoneId || !body.personId || !body.skill || !body.sourcePersonId) {
-      return { error: 'zoneId, personId, skill, and sourcePersonId are required' };
+    if (!body.zoneId || !body.personId || !body.skill) {
+      return reply.status(400).send({
+        error: 'zoneId, personId, and skill are required',
+      });
     }
 
-    const record = await memoryService.record(body);
+    // Sensible defaults: a memory without names/attribution uses the
+    // person IDs (the mobile client may pass only IDs).
+    const params: RecordMemoryParams = {
+      zoneId: body.zoneId,
+      personId: body.personId,
+      personName: body.personName || body.personId,
+      skill: body.skill,
+      description: body.description || '',
+      outcome: body.outcome || 'neutral',
+      sourcePersonId: body.sourcePersonId || body.personId,
+      sourcePersonName: body.sourcePersonName || body.sourcePersonId || body.personId,
+    };
+
+    const record = await memoryService.record(params);
     return { memory: record };
   });
 
@@ -539,19 +805,46 @@ async function main() {
    * GET /api/memories/stats?zoneId=X
    */
   app.get('/api/memories/stats', async (request) => {
-    const { zoneId } = request.query as { zoneId: string };
-    if (!zoneId) return { error: 'zoneId is required' };
+    // zoneId is optional — the mobile client asks for global stats.
+    const { zoneId } = request.query as { zoneId?: string };
 
-    return memoryService.getStats(zoneId);
+    if (zoneId) {
+      return memoryService.getStats(zoneId);
+    }
+
+    // Aggregate stats across all zones
+    const zoneIds = memoryService.listZones();
+    const allSkills = new Set<string>();
+    let totalMemories = 0;
+    let confidenceSum = 0;
+    let confidenceCount = 0;
+
+    for (const zid of zoneIds) {
+      const stats = memoryService.getStats(zid);
+      totalMemories += stats.totalMemories;
+      for (const skill of stats.skills) allSkills.add(skill);
+      if (stats.totalMemories > 0) {
+        confidenceSum += stats.averageConfidence * stats.totalMemories;
+        confidenceCount += stats.totalMemories;
+      }
+    }
+
+    return {
+      totalMemories,
+      skills: Array.from(allSkills),
+      averageConfidence: confidenceCount > 0 ? confidenceSum / confidenceCount : 0,
+    };
   });
 
   /**
    * List all memories for a zone
    * GET /api/memories?zoneId=X
    */
-  app.get('/api/memories', async (request) => {
+  app.get('/api/memories', async (request, reply) => {
     const { zoneId } = request.query as { zoneId: string };
-    if (!zoneId) return { error: 'zoneId is required' };
+    if (!zoneId) {
+      return reply.status(400).send({ error: 'zoneId is required' });
+    }
 
     const memories = memoryService.listByZone(zoneId);
     return { memories };
@@ -565,45 +858,78 @@ async function main() {
    * Create a new professional post
    * POST /api/posts
    */
-  app.post('/api/posts', async (request) => {
+  app.post('/api/posts', async (request, reply) => {
     const body = request.body as CreatePostParams;
 
     if (!body.zoneId || !body.providerId || !body.description || !body.tags) {
-      return { error: 'zoneId, providerId, description, and tags are required' };
+      return reply.status(400).send({
+        error: 'zoneId, providerId, description, and tags are required',
+      });
     }
 
     if (!body.media || body.media.length === 0) {
-      return { error: 'At least one media item (image or video) is required' };
+      return reply.status(400).send({
+        error: 'At least one media item (image or video) is required',
+      });
     }
 
     try {
+      // providerName is optional on the wire (the mobile client only
+      // sends providerId) — PostService defaults it to providerId.
       const post = await postService.create(body);
       return { post };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
   /**
    * Get the visual feed for a zone
    * GET /api/posts?zoneId=X&tags=Y&page=1&pageSize=20
+   *
+   * Also accepts the mobile-client pagination shape:
+   * GET /api/posts?zoneId=X&tag=Y&limit=20&offset=40
    */
-  app.get('/api/posts', async (request) => {
-    const { zoneId, tags, page, pageSize, includeInactive } = request.query as {
-      zoneId: string;
-      tags?: string;
-      page?: string;
-      pageSize?: string;
-      includeInactive?: string;
-    };
+  app.get('/api/posts', async (request, reply) => {
+    const { zoneId, tags, tag, page, pageSize, limit, offset, includeInactive } =
+      request.query as {
+        zoneId: string;
+        tags?: string;
+        tag?: string;
+        page?: string;
+        pageSize?: string;
+        limit?: string;
+        offset?: string;
+        includeInactive?: string;
+      };
 
-    if (!zoneId) return { error: 'zoneId is required' };
+    if (!zoneId) {
+      return reply.status(400).send({ error: 'zoneId is required' });
+    }
+
+    // Pagination: page/pageSize (canonical) OR limit/offset (mobile)
+    let resolvedPageSize = pageSize ? parseInt(pageSize, 10) : 20;
+    let resolvedPage = page ? parseInt(page, 10) : 1;
+
+    if (limit) {
+      resolvedPageSize = parseInt(limit, 10);
+      if (offset) {
+        resolvedPage = Math.floor(parseInt(offset, 10) / resolvedPageSize) + 1;
+      }
+    }
+
+    // Tags: comma-separated `tags` (canonical) OR single `tag` (mobile)
+    const resolvedTags = tags
+      ? tags.split(',')
+      : tag
+        ? [tag]
+        : undefined;
 
     const feedParams: PostFeedParams = {
       zoneId,
-      tags: tags ? tags.split(',') : undefined,
-      page: page ? parseInt(page, 10) : 1,
-      pageSize: pageSize ? parseInt(pageSize, 10) : 20,
+      tags: resolvedTags,
+      page: resolvedPage,
+      pageSize: resolvedPageSize,
       includeInactive: includeInactive === 'true',
     };
 
@@ -615,12 +941,12 @@ async function main() {
    * Get a single post
    * GET /api/posts/:postId
    */
-  app.get('/api/posts/:postId', async (request) => {
+  app.get('/api/posts/:postId', async (request, reply) => {
     const { postId } = request.params as { postId: string };
     const post = await postService.get(postId);
 
     if (!post) {
-      return { error: 'Post not found' };
+      return reply.status(404).send({ error: 'Post not found' });
     }
 
     return { post };
@@ -630,7 +956,7 @@ async function main() {
    * Update a post
    * PUT /api/posts/:postId
    */
-  app.put('/api/posts/:postId', async (request) => {
+  app.put('/api/posts/:postId', async (request, reply) => {
     const { postId } = request.params as { postId: string };
     const body = request.body as {
       description?: string;
@@ -641,10 +967,10 @@ async function main() {
 
     try {
       const post = await postService.update(postId, body);
-      if (!post) return { error: 'Post not found' };
+      if (!post) return reply.status(404).send({ error: 'Post not found' });
       return { post };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -652,11 +978,11 @@ async function main() {
    * Deactivate a post (soft delete)
    * DELETE /api/posts/:postId
    */
-  app.delete('/api/posts/:postId', async (request) => {
+  app.delete('/api/posts/:postId', async (request, reply) => {
     const { postId } = request.params as { postId: string };
     const deleted = await postService.deactivate(postId);
 
-    if (!deleted) return { error: 'Post not found' };
+    if (!deleted) return reply.status(404).send({ error: 'Post not found' });
 
     return { deactivated: true };
   });
@@ -665,13 +991,15 @@ async function main() {
    * Get professional post count for a zone+tags
    * GET /api/posts/count?zoneId=X&tags=Y
    */
-  app.get('/api/posts/count', async (request) => {
+  app.get('/api/posts/count', async (request, reply) => {
     const { zoneId, tags } = request.query as {
       zoneId: string;
       tags?: string;
     };
 
-    if (!zoneId) return { error: 'zoneId is required' };
+    if (!zoneId) {
+      return reply.status(400).send({ error: 'zoneId is required' });
+    }
 
     const count = await postService.getPostCount(
       zoneId,
@@ -695,11 +1023,11 @@ async function main() {
    * Like a post
    * POST /api/posts/:postId/like
    */
-  app.post('/api/posts/:postId/like', async (request) => {
+  app.post('/api/posts/:postId/like', async (request, reply) => {
     const { postId } = request.params as { postId: string };
     const liked = await postService.like(postId);
 
-    if (!liked) return { error: 'Post not found' };
+    if (!liked) return reply.status(404).send({ error: 'Post not found' });
 
     return { liked: true };
   });
@@ -718,15 +1046,33 @@ async function main() {
    *
    * This is how Zone grows: "اگه خودت پیدا کردی، بهم بگو"
    */
-  app.post('/api/learning/learn', async (request) => {
-    const body = request.body as LearnFromUserParams;
+  app.post('/api/learning/learn', async (request, reply) => {
+    // Mobile client omits sourcePersonId/sourcePersonName — default to
+    // the reporting person (a self-report is a valid learning signal).
+    const body = request.body as Partial<LearnFromUserParams> & {
+      demandId?: string;
+    };
 
-    if (!body.zoneId || !body.personId || !body.skill || !body.sourcePersonId) {
-      return { error: 'zoneId, personId, skill, and sourcePersonId are required' };
+    if (!body.zoneId || !body.personId || !body.skill) {
+      return reply.status(400).send({
+        error: 'zoneId, personId, and skill are required',
+      });
     }
 
+    const params: LearnFromUserParams = {
+      zoneId: body.zoneId,
+      personId: body.personId,
+      personName: body.personName || body.personId,
+      skill: body.skill,
+      description: body.description || '',
+      outcome: body.outcome || 'positive',
+      sourcePersonId: body.sourcePersonId || body.personId,
+      sourcePersonName: body.sourcePersonName || body.sourcePersonId || body.personId,
+      demandId: body.demandId,
+    };
+
     try {
-      const result = await learningService.learnFromUser(body);
+      const result = await learningService.learnFromUser(params);
 
       // Emit learning events
       eventBus.emit('memory.recorded', {
@@ -765,7 +1111,7 @@ async function main() {
         responseText: result.responseText,
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -776,15 +1122,32 @@ async function main() {
    * Used when a user shares a recommendation directly,
    * not from a demand fulfillment.
    */
-  app.post('/api/learning/record', async (request) => {
-    const body = request.body as LearnFromUserParams;
+  app.post('/api/learning/record', async (request, reply) => {
+    // Same tolerant body handling as /api/learning/learn
+    const body = request.body as Partial<LearnFromUserParams> & {
+      demandId?: string;
+    };
 
-    if (!body.zoneId || !body.personId || !body.skill || !body.sourcePersonId) {
-      return { error: 'zoneId, personId, skill, and sourcePersonId are required' };
+    if (!body.zoneId || !body.personId || !body.skill) {
+      return reply.status(400).send({
+        error: 'zoneId, personId, and skill are required',
+      });
     }
 
+    const params: LearnFromUserParams = {
+      zoneId: body.zoneId,
+      personId: body.personId,
+      personName: body.personName || body.personId,
+      skill: body.skill,
+      description: body.description || '',
+      outcome: body.outcome || 'positive',
+      sourcePersonId: body.sourcePersonId || body.personId,
+      sourcePersonName: body.sourcePersonName || body.sourcePersonId || body.personId,
+      demandId: body.demandId,
+    };
+
     try {
-      const result = await learningService.learnFromUser(body);
+      const result = await learningService.learnFromUser(params);
 
       eventBus.emit('memory.recorded', {
         memoryId: result.memory.id,
@@ -808,7 +1171,7 @@ async function main() {
         responseText: result.responseText,
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -820,8 +1183,10 @@ async function main() {
    * "یه نقاش می‌خواستم" → still open
    */
   app.get('/api/learning/demands', async (request) => {
-    const { requesterId, zoneId, skill, status } = request.query as {
+    // Accept both `requesterId` (canonical) and `personId` (mobile client)
+    const { requesterId, personId, zoneId, skill, status } = request.query as {
       requesterId?: string;
+      personId?: string;
       zoneId?: string;
       skill?: string;
       status?: string;
@@ -830,7 +1195,7 @@ async function main() {
     const demandService = learningService.getDemandService();
 
     const demands = demandService.search({
-      requesterId,
+      requesterId: requesterId || personId,
       zoneId,
       skill,
       status: status as any,
@@ -843,13 +1208,13 @@ async function main() {
    * Get a specific demand
    * GET /api/learning/demands/:demandId
    */
-  app.get('/api/learning/demands/:demandId', async (request) => {
+  app.get('/api/learning/demands/:demandId', async (request, reply) => {
     const { demandId } = request.params as { demandId: string };
     const demandService = learningService.getDemandService();
     const demand = demandService.get(demandId);
 
     if (!demand) {
-      return { error: 'Demand not found' };
+      return reply.status(404).send({ error: 'Demand not found' });
     }
 
     return { demand };
@@ -859,13 +1224,13 @@ async function main() {
    * Cancel a learning demand
    * POST /api/learning/demands/:demandId/cancel
    */
-  app.post('/api/learning/demands/:demandId/cancel', async (request) => {
+  app.post('/api/learning/demands/:demandId/cancel', async (request, reply) => {
     const { demandId } = request.params as { demandId: string };
     const demandService = learningService.getDemandService();
     const cancelled = demandService.cancel(demandId);
 
     if (!cancelled) {
-      return { error: 'Demand not found or not open' };
+      return reply.status(404).send({ error: 'Demand not found or not open' });
     }
 
     return { cancelled: true };
@@ -889,7 +1254,7 @@ async function main() {
    * Returns memories AND open demands for a skill+zone.
    * If there are open demands, we know the neighbourhood is interested.
    */
-  app.get('/api/learning/search', async (request) => {
+  app.get('/api/learning/search', async (request, reply) => {
     const { skill, zoneId, minConfidence, maxResults } = request.query as {
       skill: string;
       zoneId: string;
@@ -897,7 +1262,9 @@ async function main() {
       maxResults?: string;
     };
 
-    if (!skill || !zoneId) return { error: 'skill and zoneId are required' };
+    if (!skill || !zoneId) {
+      return reply.status(400).send({ error: 'skill and zoneId are required' });
+    }
 
     try {
       const result = await learningService.searchWithContext({
@@ -913,7 +1280,7 @@ async function main() {
         demandCount: result.demandCount,
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -931,28 +1298,66 @@ async function main() {
    * 3. If verified, create pending subscription
    * 4. Return payment URL for external payment
    */
-  app.post('/api/professional/register', async (request) => {
-    const body = request.body as RegisterProfessionalParams;
+  app.post('/api/professional/register', async (request, reply) => {
+    // Two shapes are accepted:
+    //   canonical: { personId, personName, zoneId, license: {...}, planId }
+    //   mobile:    { personId, profession, licenseNumber, licenseImageUrl }
+    const body = request.body as Partial<RegisterProfessionalParams> & {
+      profession?: string;
+      licenseNumber?: string;
+      licenseImageUrl?: string;
+    };
 
-    if (!body.personId || !body.zoneId || !body.license || !body.planId) {
-      return { error: 'personId, zoneId, license, and planId are required' };
+    const isMobileShape = !body.license && body.licenseNumber;
+
+    if (!body.personId) {
+      return reply.status(400).send({ error: 'personId is required' });
+    }
+    if (!isMobileShape && (!body.zoneId || !body.license || !body.planId)) {
+      return reply.status(400).send({
+        error: 'personId, zoneId, license, and planId are required',
+      });
     }
 
+    // Normalize to the canonical shape
+    const params: RegisterProfessionalParams = isMobileShape
+      ? {
+          personId: body.personId,
+          personName: body.personName || body.personId,
+          zoneId: body.zoneId || 'zone_default',
+          planId: body.planId || 'monthly',
+          license: {
+            personId: body.personId,
+            personName: body.personName || body.personId,
+            licenseNumber: body.licenseNumber!,
+            licenseImageUrl: body.licenseImageUrl || '',
+            profession: body.profession || 'repair',
+            zoneId: body.zoneId || 'zone_default',
+          },
+        }
+      : {
+          personId: body.personId,
+          personName: body.personName || body.personId,
+          zoneId: body.zoneId!,
+          license: body.license!,
+          planId: body.planId!,
+        };
+
     try {
-      const result = await subscriptionService.registerProfessional(body);
+      const result = await subscriptionService.registerProfessional(params);
 
       // Emit events
       eventBus.emit('license.submitted', {
         licenseId: result.license.id,
-        personId: body.personId,
-        profession: body.license.profession,
+        personId: params.personId,
+        profession: result.license.profession,
         licenseNumber: result.license.licenseNumber,
       });
 
       eventBus.emit('professional.registered', {
-        personId: body.personId,
-        zoneId: body.zoneId,
-        profession: body.license.profession,
+        personId: params.personId,
+        zoneId: params.zoneId,
+        profession: result.license.profession,
         subscriptionId: result.subscription.id,
       });
 
@@ -972,7 +1377,7 @@ async function main() {
         responseText: result.responseText,
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -983,18 +1388,43 @@ async function main() {
    * Called by the external payment gateway callback.
    * ⚠️ The app NEVER processes payment directly.
    */
-  app.post('/api/professional/activate', async (request) => {
-    const body = request.body as ActivateSubscriptionParams;
+  app.post('/api/professional/activate', async (request, reply) => {
+    // Two shapes are accepted:
+    //   canonical (gateway callback): { subscriptionId, paymentReference }
+    //   mobile:                       { personId, planId, paymentReference }
+    const body = request.body as Partial<ActivateSubscriptionParams> & {
+      personId?: string;
+      planId?: string;
+    };
 
-    if (!body.subscriptionId || !body.paymentReference) {
-      return { error: 'subscriptionId and paymentReference are required' };
+    let subscriptionId = body.subscriptionId;
+
+    if (!subscriptionId && body.personId) {
+      // Resolve the person's most recent pending subscription
+      const pending = subscriptionService.search({
+        personId: body.personId,
+        status: 'pending',
+      });
+      const match = body.planId
+        ? pending.find((s) => s.planId === body.planId) || pending[pending.length - 1]
+        : pending[pending.length - 1];
+      subscriptionId = match?.id;
+    }
+
+    if (!subscriptionId || !body.paymentReference) {
+      return reply.status(400).send({
+        error: 'subscriptionId (or personId) and paymentReference are required',
+      });
     }
 
     try {
-      const subscription = await subscriptionService.activateSubscription(body);
+      const subscription = await subscriptionService.activateSubscription({
+        subscriptionId,
+        paymentReference: body.paymentReference,
+      });
 
       if (!subscription) {
-        return { error: 'Subscription not found' };
+        return reply.status(404).send({ error: 'Subscription not found' });
       }
 
       // Emit events
@@ -1015,7 +1445,7 @@ async function main() {
         },
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -1023,32 +1453,37 @@ async function main() {
    * Verify a license (admin or external callback)
    * POST /api/professional/license/verify
    */
-  app.post('/api/professional/license/verify', async (request) => {
+  app.post('/api/professional/license/verify', async (request, reply) => {
+    // Mobile client omits verifiedBy (defaults to 'system')
     const body = request.body as {
       licenseId: string;
       approved: boolean;
-      verifiedBy: string;
+      verifiedBy?: string;
       rejectionReason?: string;
       verificationReference?: string;
       expiresAt?: string;
     };
 
-    if (!body.licenseId || body.approved === undefined || !body.verifiedBy) {
-      return { error: 'licenseId, approved, and verifiedBy are required' };
+    if (!body.licenseId || body.approved === undefined) {
+      return reply.status(400).send({
+        error: 'licenseId and approved are required',
+      });
     }
 
     try {
       const license = await licenseService.verifyLicense({
         licenseId: body.licenseId,
         approved: body.approved,
-        verifiedBy: body.verifiedBy,
+        verifiedBy: body.verifiedBy || 'system',
         rejectionReason: body.rejectionReason,
         verificationReference: body.verificationReference,
         expiresAt: body.expiresAt ? new Date(body.expiresAt) : undefined,
       });
 
       if (!license) {
-        return { error: 'License not found or not pending' };
+        return reply.status(404).send({
+          error: 'License not found or not pending',
+        });
       }
 
       // Emit events
@@ -1076,7 +1511,7 @@ async function main() {
         },
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -1087,7 +1522,11 @@ async function main() {
   app.get('/api/professional/status/:personId', async (request) => {
     const { personId } = request.params as { personId: string };
     const status = subscriptionService.getProfessionalStatus(personId);
-    return status;
+    return {
+      ...status,
+      // Mobile-client contract key
+      professionalStatus: status.status,
+    };
   });
 
   /**
@@ -1102,12 +1541,12 @@ async function main() {
    * Get subscription details
    * GET /api/professional/subscription/:subscriptionId
    */
-  app.get('/api/professional/subscription/:subscriptionId', async (request) => {
+  app.get('/api/professional/subscription/:subscriptionId', async (request, reply) => {
     const { subscriptionId } = request.params as { subscriptionId: string };
     const subscription = subscriptionService.get(subscriptionId);
 
     if (!subscription) {
-      return { error: 'Subscription not found' };
+      return reply.status(404).send({ error: 'Subscription not found' });
     }
 
     return { subscription };
@@ -1117,26 +1556,35 @@ async function main() {
    * Renew a subscription
    * POST /api/professional/renew
    */
-  app.post('/api/professional/renew', async (request) => {
+  app.post('/api/professional/renew', async (request, reply) => {
+    // planId is optional — defaults to the subscription's current plan
+    // (the mobile client renews with just subscriptionId + paymentReference).
     const body = request.body as {
       subscriptionId: string;
-      planId: string;
+      planId?: string;
       paymentReference: string;
     };
 
-    if (!body.subscriptionId || !body.planId || !body.paymentReference) {
-      return { error: 'subscriptionId, planId, and paymentReference are required' };
+    if (!body.subscriptionId || !body.paymentReference) {
+      return reply.status(400).send({
+        error: 'subscriptionId and paymentReference are required',
+      });
+    }
+
+    const existing = subscriptionService.get(body.subscriptionId);
+    if (!existing) {
+      return reply.status(404).send({ error: 'Subscription not found' });
     }
 
     try {
       const subscription = await subscriptionService.renewSubscription(
         body.subscriptionId,
-        body.planId,
+        body.planId || existing.planId,
         body.paymentReference
       );
 
       if (!subscription) {
-        return { error: 'Subscription not found' };
+        return reply.status(404).send({ error: 'Subscription not found' });
       }
 
       eventBus.emit('subscription.activated', {
@@ -1155,7 +1603,7 @@ async function main() {
         },
       };
     } catch (err: any) {
-      return { error: err.message };
+      return reply.status(400).send({ error: err.message });
     }
   });
 
@@ -1163,13 +1611,13 @@ async function main() {
    * Cancel a subscription
    * POST /api/professional/cancel/:subscriptionId
    */
-  app.post('/api/professional/cancel/:subscriptionId', async (request) => {
+  app.post('/api/professional/cancel/:subscriptionId', async (request, reply) => {
     const { subscriptionId } = request.params as { subscriptionId: string };
 
     const cancelled = await subscriptionService.cancelSubscription(subscriptionId);
 
     if (!cancelled) {
-      return { error: 'Subscription not found' };
+      return reply.status(404).send({ error: 'Subscription not found' });
     }
 
     const subscription = subscriptionService.get(subscriptionId);
@@ -1283,6 +1731,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     logger.info('zone:api:shutting_down', { signal });
     await app.close();
+    await waveQueue.close();
     await redis.disconnect();
     process.exit(0);
   };

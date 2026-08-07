@@ -275,6 +275,13 @@ export class MemoryService {
     return records;
   }
 
+  /**
+   * List all zone IDs that have memories
+   */
+  listZones(): string[] {
+    return Array.from(this.index.keys());
+  }
+
   // ─── Private Helpers ───
 
   private findExisting(

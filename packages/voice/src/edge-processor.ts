@@ -140,7 +140,7 @@ export class EdgeProcessor {
       'services/electrical': ['برق', 'برقکار', 'سیم', 'سوکت', 'چراغ', 'برقکاری', 'electr'],
       'services/cleaning': ['نظافت', 'تمیز', 'نظافتچی', 'شستن', 'clean'],
       'services/repair': ['تعمیر', 'درست', 'خراب', 'تعمیرات', 'fix', 'repair'],
-      'services/moving': ['اسباب', 'کشی', 'اسباب‌کشی', 'حمل', 'جابجایی', 'move'],
+      'services/moving': ['اسباب', 'کشی', 'اسباب‌کشی', 'حمل', 'جابجایی', 'باربری', 'حمل بار', 'باربر', 'move'],
       'services/carpentry': ['نجار', 'چوب', 'نجاری', 'کابینت', 'carpent'],
       'services/tiling': ['سرامیک', 'کاشی', 'سرامیک‌کار', 'کاشی‌کار', 'tile'],
       'services/air_conditioning': ['کولر', 'تهویه', 'اسپلیت', 'کولر‌گاه', 'air cond'],
@@ -171,8 +171,13 @@ export class EdgeProcessor {
     // Urgency keywords
     const urgencyKeywords: Record<string, string[]> = {
       'urgency/urgent': ['فوری', 'عجله', 'زود', 'فوراً'],
+      // NOTE: 'خون' needs word-boundary matching so that everyday words
+      // like 'خونه' (home) don't fake an emergency.
       'urgency/emergency': ['اضطراری', 'خطر', 'خون', 'تصادف', 'حریق', 'نفس'],
     };
+
+    // Keywords that must match as a whole word, not as a substring
+    const wordBoundaryKeywords = new Set(['خون']);
 
     const allKeywords: Record<string, string[]> = {
       ...serviceKeywords,
@@ -183,7 +188,10 @@ export class EdgeProcessor {
 
     for (const [tag, keywords] of Object.entries(allKeywords)) {
       for (const keyword of keywords) {
-        if (normalizedText.includes(keyword)) {
+        const matched = wordBoundaryKeywords.has(keyword)
+          ? this.includesWholeWord(normalizedText, keyword)
+          : normalizedText.includes(keyword);
+        if (matched) {
           if (!matchedTags.includes(tag)) {
             matchedTags.push(tag);
           }
@@ -200,6 +208,26 @@ export class EdgeProcessor {
     return matchedTags;
   }
 
+  // ─── Whole-Word Matching ───
+
+  /**
+   * True if `keyword` occurs in `text` as a standalone word
+   * (surrounded by non-Persian-letter characters or string edges).
+   * Needed for short words like «خون» that are substrings of common
+   * words like «خونه».
+   */
+  private includesWholeWord(text: string, keyword: string): boolean {
+    // Treat anything outside the Arabic/Persian letter block
+    // (U+0621–U+06D2) as a word boundary. ZWNJ (U+200C) is a boundary,
+    // so compound words still match their parts.
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const NON_LETTER = '[^\\u0621-\\u06D2]';
+    const pattern = new RegExp(
+      `(^|${NON_LETTER})${escaped}(${NON_LETTER}|$)`
+    );
+    return pattern.test(text);
+  }
+
   // ─── Intent Detection ───
 
   /**
@@ -213,10 +241,16 @@ export class EdgeProcessor {
     const normalizedText = this.normalizePersian(text);
 
     // KNOW patterns: user is sharing information
+    // (aligned with the mobile IntentDetector patterns)
     const knowPatterns = [
       'معرفی می‌کنم', 'پیشنهاد می‌دم', 'شناخته‌ام', 'کار کرده',
       'خوب بود', 'عالی بود', 'راضی بودم', 'تأیید می‌کنم',
       'آقای', 'خانم', 'استاد', 'مهندس',
+      // Self-declaration / sharing patterns (mobile parity):
+      'بلدم', 'می‌تونم', 'می‌توانم', 'می‌شناسم', 'می‌دونم',
+      'توصیه می‌کنم', 'پیشنهاد می‌کنم', 'عالیه', 'خوبه',
+      'خیلی خوب', 'خبر دارم', 'گرفتم', 'پیدا کردم',
+      'بد نبود', 'ناراضی بودم',
     ];
 
     // ASK patterns: user is requesting help
@@ -229,9 +263,23 @@ export class EdgeProcessor {
 
     // UNKNOWN patterns: user is expressing uncertainty
     const unknownPatterns = [
-      'نمی‌دونم', 'نمیشناسم', 'کسی رو نمی‌شناسم', 'اطلاع ندارم',
-      'راهی نیست', 'نمی‌تونم', 'امکانش نیست',
+      'نمی‌دونم', 'نمیدونم', 'نمی‌شناسم', 'نمیشناسم',
+      'کسی رو نمی‌شناسم', 'اطلاع ندارم',
+      'راهی نیست', 'نمی‌تونم', 'نمیتونم', 'امکانش نیست',
     ];
+
+    // Negated compounds contain KNOW patterns as substrings
+    // ("نمی‌شناسم" ⊃ "می‌شناسم"). Strip them first so shares are not
+    // scored on negations.
+    const negations = [
+      'نمی‌تونم', 'نمیتونم', 'نمی‌توانم', 'نمیتوانم',
+      'نمی‌دونم', 'نمیدونم', 'نمی‌شناسم', 'نمیشناسم',
+      'بلد نیستم', 'عالی نیست', 'خوب نیست',
+    ];
+    let shareText = normalizedText;
+    for (const neg of negations) {
+      shareText = shareText.split(neg).join(' ');
+    }
 
     // Score each intent
     let knowScore = 0;
@@ -239,7 +287,7 @@ export class EdgeProcessor {
     let unknownScore = 0;
 
     for (const pattern of knowPatterns) {
-      if (normalizedText.includes(pattern)) knowScore++;
+      if (shareText.includes(pattern)) knowScore++;
     }
 
     for (const pattern of askPatterns) {
@@ -250,15 +298,19 @@ export class EdgeProcessor {
       if (normalizedText.includes(pattern)) unknownScore++;
     }
 
-    // Service/social tags strongly suggest ASK
-    if (tags.some((t) => t.startsWith('services/') || t.startsWith('social/'))) {
-      askScore += 2;
-    }
+    // NOTE: tags alone must NOT manufacture an ASK intent — a share like
+    // "من بلدم نقاشی" also carries a service tag. (Mobile parity.)
 
     // Return the highest scoring intent
     if (unknownScore > knowScore && unknownScore > askScore) return 'unknown';
-    if (knowScore > askScore) return 'know';
-    return 'ask';
+    // Prefer KNOW on ties — the user is sharing information, which is
+    // more valuable than misclassifying it as a request (mobile parity).
+    if (knowScore >= askScore && knowScore >= 1) return 'know';
+    if (askScore >= 1) return 'ask';
+    // No lexical signal: a tag still suggests the user is asking for
+    // something ("برق خونه رفت" with no ask words).
+    if (tags.length > 0) return 'ask';
+    return 'unknown';
   }
 
   // ─── Number Extraction ───
