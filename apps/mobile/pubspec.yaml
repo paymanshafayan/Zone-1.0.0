@@ -24,10 +24,17 @@ dependencies:
   web_socket_channel: ^3.0.2
 
   # ─── Voice / Audio ───
-  record: ^5.2.1
-  audioplayers: ^6.1.0
-  speech_to_text: ^7.0.0
-  flutter_tts: ^4.2.3
+  # Proven, actively-maintained audio stack (audioplayers removed — caused
+  # Android build failures with AGP 8.11+/Gradle 8.14):
+  #   • just_audio + audio_session → playback & audio focus (the stable standard)
+  #   • record → microphone capture (v6: Kotlin 2.x / AGP 8.x compatible)
+  #   • speech_to_text → on-device Persian STT
+  #   • flutter_tts → Persian voice responses
+  record: ^6.2.1
+  just_audio: ^0.10.5
+  audio_session: ^0.2.4
+  speech_to_text: ^7.4.0
+  flutter_tts: ^4.2.5
 
   # ─── Maps ───
   # Neshan map SDK — will be added when available

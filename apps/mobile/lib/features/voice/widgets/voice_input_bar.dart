@@ -1,7 +1,12 @@
-/// Voice Input Bar — Text input + voice recording button
+/// Voice Input Bar — Text input + voice capture button
 ///
 /// Voice is primary (mic button), text is alternative (text field).
-/// Matches architecture: "صدا رسانه اصلیه، متن جایگزینه"
+/// Matches architecture: «صدا رسانه اصلیه، متن جایگزینه»
+///
+/// While capturing, the bar shows the live on-device transcript
+/// (STT mode) and offers two actions:
+///   ✓ finish & send   (onRecordingStop)
+///   ✕ discard         (onRecordingCancel)
 library features_voice_widgets_voice_input_bar;
 
 import 'package:flutter/material.dart';
@@ -10,9 +15,14 @@ import '../../../core/theme/app_theme.dart';
 
 class VoiceInputBar extends StatefulWidget {
   final bool isRecording;
+  final bool isSpeaking;
+
+  /// Live partial transcript from on-device STT — empty when unavailable.
+  final String liveTranscript;
   final ValueChanged<String> onTextChanged;
   final VoidCallback onRecordingStart;
   final VoidCallback onRecordingStop;
+  final VoidCallback onRecordingCancel;
 
   const VoiceInputBar({
     super.key,
@@ -20,6 +30,9 @@ class VoiceInputBar extends StatefulWidget {
     required this.onTextChanged,
     required this.onRecordingStart,
     required this.onRecordingStop,
+    required this.onRecordingCancel,
+    this.isSpeaking = false,
+    this.liveTranscript = '',
   });
 
   @override
@@ -79,12 +92,14 @@ class _VoiceInputBarState extends State<VoiceInputBar> with TickerProviderStateM
     );
   }
 
-  /// Recording state UI
+  /// Recording state UI — waveform, live transcript, finish/cancel actions
   Widget _buildRecordingUI() {
+    final hasTranscript = widget.liveTranscript.trim().isNotEmpty;
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // ─── Waveform visualization (placeholder) ───
+        // ─── Waveform visualization ───
         Container(
           height: 48,
           decoration: BoxDecoration(
@@ -116,21 +131,48 @@ class _VoiceInputBarState extends State<VoiceInputBar> with TickerProviderStateM
         ),
         const SizedBox(height: 12),
 
-        // ─── Stop button ───
+        // ─── Live transcript (on-device STT) ───
+        if (hasTranscript)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              widget.liveTranscript,
+              textDirection: TextDirection.rtl,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppTheme.textSecondaryLight,
+              ),
+            ),
+          ),
+
+        // ─── Actions: discard · status · finish ───
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // Cancel capture
+            FloatingActionButton.small(
+              heroTag: 'voice_cancel',
+              onPressed: widget.onRecordingCancel,
+              backgroundColor: Colors.white,
+              elevation: 1,
+              child: const Icon(Icons.close, color: AppTheme.accentEmergency),
+            ),
+            const SizedBox(width: 20),
             Text(
-              'در حال ضبط...',
+              hasTranscript ? 'دارم می‌شنوم...' : 'در حال ضبط...',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: AppTheme.accentEmergency,
               ),
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 20),
+            // Finish capture & send
             FloatingActionButton.small(
+              heroTag: 'voice_finish',
               onPressed: widget.onRecordingStop,
-              backgroundColor: AppTheme.accentEmergency,
-              child: const Icon(Icons.stop, color: Colors.white),
+              backgroundColor: AppTheme.accentKnow,
+              child: const Icon(Icons.check, color: Colors.white),
             ),
           ],
         ),
@@ -147,9 +189,15 @@ class _VoiceInputBarState extends State<VoiceInputBar> with TickerProviderStateM
         ScaleTransition(
           scale: _pulseAnimation,
           child: FloatingActionButton(
-            onPressed: widget.onRecordingStart,
-            backgroundColor: AppTheme.primaryLight,
+            heroTag: 'voice_mic',
+            onPressed: widget.isSpeaking ? null : widget.onRecordingStart,
+            backgroundColor: widget.isSpeaking
+                ? AppTheme.textSecondaryLight
+                : AppTheme.primaryLight,
             elevation: 2,
+            tooltip: widget.isSpeaking
+                ? 'زون داره حرف می‌زنه...'
+                : 'حرف بزن',
             child: const Icon(Icons.mic, color: Colors.white, size: 28),
           ),
         ),
@@ -164,40 +212,21 @@ class _VoiceInputBarState extends State<VoiceInputBar> with TickerProviderStateM
               hintText: 'بنویس یا حرف بزن...',
               suffixIcon: IconButton(
                 icon: const Icon(Icons.send),
-                onPressed: () {
-                  final text = _textController.text.trim();
-                  if (text.isNotEmpty) {
-                    widget.onTextChanged(text);
-                    _textController.clear();
-                  }
-                },
+                onPressed: _submitText,
               ),
             ),
-            onSubmitted: (text) {
-              if (text.trim().isNotEmpty) {
-                widget.onTextChanged(text.trim());
-                _textController.clear();
-              }
-            },
+            onSubmitted: (_) => _submitText(),
           ),
         ),
       ],
     );
   }
-}
 
-/// AnimatedBuilder helper
-class AnimatedBuilder extends AnimatedWidget {
-  final Widget Function(BuildContext context, Widget? child) builder;
-
-  const AnimatedBuilder({
-    super.key,
-    required Animation<double> animation,
-    required this.builder,
-  }) : super(listenable: animation);
-
-  @override
-  Widget build(BuildContext context) {
-    return builder(context, null);
+  void _submitText() {
+    final text = _textController.text.trim();
+    if (text.isNotEmpty) {
+      widget.onTextChanged(text);
+      _textController.clear();
+    }
   }
 }

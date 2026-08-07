@@ -21,22 +21,11 @@ class VoiceScreen extends ConsumerStatefulWidget {
   ConsumerState<VoiceScreen> createState() => _VoiceScreenState();
 }
 
-class _VoiceScreenState extends ConsumerState<VoiceScreen> with TickerProviderStateMixin {
+class _VoiceScreenState extends ConsumerState<VoiceScreen> {
   final ScrollController _scrollController = ScrollController();
-  late AnimationController _pulseController;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    );
-  }
 
   @override
   void dispose() {
-    _pulseController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -63,6 +52,18 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with TickerProviderSt
         title: const Text('زون'),
         centerTitle: true,
         actions: [
+          // ─── Spoken replies toggle ───
+          IconButton(
+            icon: Icon(
+              voiceState.ttsEnabled ? Icons.volume_up : Icons.volume_off,
+            ),
+            onPressed: () => ref
+                .read(voiceProvider.notifier)
+                .setTtsEnabled(!voiceState.ttsEnabled),
+            tooltip: voiceState.ttsEnabled
+                ? 'خواندن صوتی پاسخ‌ها: روشن'
+                : 'خواندن صوتی پاسخ‌ها: خاموش',
+          ),
           if (voiceState.conversation.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_outline),
@@ -106,9 +107,15 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with TickerProviderSt
           if (voiceState.state == VoiceState.processing)
             _buildProcessingIndicator(),
 
+          // ─── Speaking Indicator ───
+          if (voiceState.isSpeaking)
+            _buildSpeakingIndicator(),
+
           // ─── Input Bar ───
           VoiceInputBar(
             isRecording: voiceState.state == VoiceState.recording,
+            isSpeaking: voiceState.isSpeaking,
+            liveTranscript: voiceState.liveTranscript,
             onTextChanged: (text) {
               ref.read(voiceProvider.notifier).processInput(text);
             },
@@ -116,8 +123,9 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with TickerProviderSt
               ref.read(voiceProvider.notifier).startRecording();
             },
             onRecordingStop: () {
-              // In production: STT will provide the text
-              // For now, we just stop recording
+              ref.read(voiceProvider.notifier).stopRecordingAndProcess();
+            },
+            onRecordingCancel: () {
               ref.read(voiceProvider.notifier).cancel();
             },
           ),
@@ -268,6 +276,91 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with TickerProviderSt
           ),
         ],
       ),
+    );
+  }
+
+  /// Speaking indicator — shown while Zone reads a reply out loud
+  Widget _buildSpeakingIndicator() {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _SpeakingDots(color: AppTheme.primaryLight),
+          const SizedBox(width: 12),
+          Text(
+            'زون داره می‌گه...',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: AppTheme.textSecondaryLight,
+            ),
+          ),
+          const SizedBox(width: 8),
+          InkWell(
+            onTap: () => ref.read(voiceProvider.notifier).stopSpeaking(),
+            borderRadius: BorderRadius.circular(16),
+            child: const Padding(
+              padding: EdgeInsets.all(4),
+              child: Icon(Icons.stop_circle_outlined,
+                  size: 20, color: AppTheme.accentEmergency),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Tiny animated "speaking" dots used by the speaking indicator.
+class _SpeakingDots extends StatefulWidget {
+  final Color color;
+
+  const _SpeakingDots({required this.color});
+
+  @override
+  State<_SpeakingDots> createState() => _SpeakingDotsState();
+}
+
+class _SpeakingDotsState extends State<_SpeakingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(3, (index) {
+            final phase = (_controller.value + index / 3) % 1.0;
+            final scale = 0.6 + 0.6 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+            return Container(
+              width: 6,
+              height: 6 * scale,
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              decoration: BoxDecoration(
+                color: widget.color,
+                borderRadius: BorderRadius.circular(3),
+              ),
+            );
+          }),
+        );
+      },
     );
   }
 }
