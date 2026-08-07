@@ -34,8 +34,10 @@ android {
             resValue("string", "app_name", "زون (Debug)")
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // DIAGNOSTIC: minification temporarily disabled to isolate a
+            // persistent CI release-build failure (re-enable once fixed).
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
